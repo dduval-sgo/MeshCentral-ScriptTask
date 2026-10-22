@@ -360,7 +360,12 @@ Each step can ship on its own and keeps the plugin working.
    - `#var#` tokens are matched before the language's own rules, so PowerShell and Bash don't treat them as the start of a comment.
    - Non-site-admin managers can't see My Server > Plugins, so the device tab's Open ScriptTask button is their way in. It uses MeshCentral's own `goPlugin`, with the target script passed through localStorage.
    - The section nav has Library and Settings so far. Queue, Schedules, History, Run/Batch, Variables and Overview arrive in steps 5 to 7.
-5. **Queue, Schedules, History (server-wide).** Paged queries, filters, bulk actions. Schedules sorted by next run.
+5. ✅ **Queue, Schedules, History (server-wide)** (done). Paged queries, filters, bulk actions. Schedules sorted by next run.
+   Notes from building it:
+   - Managers only see jobs and schedules on devices they can see in MeshCentral, checked with MeshCentral's own `GetNodeWithRights` per device (cached 30 seconds per user, with new devices checked straight away). MeshCentral's `GetNodesWithRights` can't be used: its callback only fires if the last device checked is visible.
+   - History is filtered and paged in the database. Lists carry the first 300 characters of output; the viewer fetches the full run. Queue and Schedules are small, so they are filtered on the server in memory.
+   - Found and fixed in the NeDB wrapper: queries inherited the previous query's sort and limit.
+   - Batch grouping in History waits for `batchId` in step 6. The stale threshold (30 minutes) becomes a setting in step 7.
 6. **Run/Batch + batch results.** Device picker, `batchId`, grouped results matrix.
 7. **Variables + Settings + Overview.**
 8. **Polish.** Keyboard shortcuts, empty states, readme and screenshots, version bump.

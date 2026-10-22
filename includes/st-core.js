@@ -160,6 +160,7 @@
         waiting: { label: 'Waiting for device', cls: 'st-badge-outline-warning', icon: 'wifi-off', title: 'Runs when the device comes online.' },
         scheduled: { label: 'Scheduled', cls: 'st-badge-outline', icon: 'clock', title: 'Not due yet.' },
         dispatched: { label: 'Running', cls: 'text-bg-info', icon: 'send', title: 'Sent to the device. Waiting for its result.' },
+        stale: { label: 'No result yet', cls: 'text-bg-warning', icon: 'hourglass-split', title: 'Sent to the device a while ago without a result.' },
         complete: { label: 'Completed', cls: 'text-bg-success', icon: 'check-circle-fill', title: '' },
         error: { label: 'Error', cls: 'text-bg-danger', icon: 'exclamation-octagon-fill', title: '' },
         cancelled: { label: 'Cancelled', cls: 'st-badge-outline', icon: 'slash-circle', title: '' },

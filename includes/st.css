@@ -169,3 +169,20 @@ body.st-page-server { padding: 0; overflow: hidden; background: var(--bs-body-bg
     .st-lib-tree .st-tree { max-height: 18rem; }
     .st-tab-body.st-tab-editor { height: 70vh; }
 }
+
+/* Server-wide lists: Queue, Schedules, History */
+.st-list-page { display: flex; flex-direction: column; gap: .75rem; }
+.st-list-head { display: flex; align-items: baseline; gap: .75rem; flex-wrap: wrap; }
+.st-filters { display: flex; flex-wrap: wrap; gap: .5rem; align-items: center; }
+.st-filters .form-select, .st-filters .form-control { width: auto; min-width: 9rem; max-width: 14rem; }
+.st-filters .st-filter-wide { min-width: 14rem; max-width: 20rem; }
+.st-filter-date { display: inline-flex; align-items: center; gap: .35rem; font-size: .8rem; color: var(--bs-secondary-color); margin: 0; }
+.st-filter-date .form-control { min-width: 0; }
+.st-bulk { display: flex; align-items: center; gap: .5rem; flex-wrap: wrap; padding: .5rem .75rem; border: 1px solid var(--bs-primary-border-subtle); background: var(--bs-primary-bg-subtle); color: var(--bs-primary-text-emphasis); border-radius: var(--bs-border-radius); position: sticky; top: 0; z-index: 5; }
+.st-pager { display: flex; align-items: center; justify-content: space-between; gap: .75rem; font-size: .85rem; color: var(--bs-secondary-color); }
+.st-table .st-col-check { width: 2rem; }
+.st-list-page .st-table th:first-child, .st-list-page .st-table td:first-child { padding-left: .75rem; }
+.st-device-cell { display: inline-flex; align-items: baseline; gap: .35rem; flex-wrap: wrap; }
+.st-dot { width: .55rem; height: .55rem; border-radius: 50%; display: inline-block; flex: none; align-self: center; }
+.st-dot-on { background: var(--bs-success); }
+.st-dot-off { background: var(--bs-secondary-bg); border: 1px solid var(--bs-border-color); }

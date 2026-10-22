@@ -15,13 +15,22 @@
     var TYPES = [['ps1', 'PowerShell'], ['bat', 'Batch'], ['bash', 'Bash']];
     var BUILT_INS = { 'GBL:meshId': 'The device\'s group id', 'GBL:nodeId': 'The device\'s id', 'GBL:runBy': 'The user (or schedule owner) who started the run' };
 
-    // ---- Routing: #/library, #/library/<scriptOrFolderId>, #/settings ----
+    // ---- Routing: #/<section>[/<id>][?filters], e.g. #/library/<scriptId> or #/history?status=error&page=2 ----
 
+    var SECTIONS = ['library', 'queue', 'schedules', 'history', 'settings'];
     function parseRoute() {
-        var m = /^#\/(library|settings)(?:\/([^/?#]+))?/.exec(location.hash);
-        return m ? { section: m[1], id: m[2] ? decodeURIComponent(m[2]) : null } : { section: 'library', id: null };
+        var m = /^#\/([a-z]+)(?:\/([^/?#]+))?(?:\?(.*))?$/.exec(location.hash);
+        if (m == null || SECTIONS.indexOf(m[1]) === -1) return { section: 'library', id: null, query: {} };
+        var query = {};
+        if (m[3]) new URLSearchParams(m[3]).forEach(function (v, k) { query[k] = v; });
+        return { section: m[1], id: m[2] ? decodeURIComponent(m[2]) : null, query: query };
     }
-    function routeHash(r) { return '#/' + r.section + (r.id ? '/' + encodeURIComponent(r.id) : ''); }
+    function routeHash(r) {
+        var q = new URLSearchParams();
+        Object.keys(r.query || {}).forEach(function (k) { if (r.query[k] != null && r.query[k] !== '') q.set(k, r.query[k]); });
+        var qs = q.toString();
+        return '#/' + r.section + (r.id ? '/' + encodeURIComponent(r.id) : '') + (qs ? '?' + qs : '');
+    }
 
     // Script names referenced in a script as #name#
     function referencedVars(content) {
@@ -226,6 +235,257 @@
         </div>`;
     }
 
+    // ---- Queue, Schedules and History ----
+
+    var PAGE_SIZE = 50;
+    var STATUS_OPTIONS = {
+        queue: [['', 'Any status'], ['queued', 'Queued'], ['waiting', 'Waiting for device'], ['scheduled', 'Scheduled'], ['dispatched', 'Running'], ['stale', 'No result yet'], ['missed', 'Missed']],
+        schedules: [['', 'Active and paused'], ['active', 'Active'], ['paused', 'Paused']],
+        history: [['', 'Any result'], ['complete', 'Completed'], ['error', 'Error'], ['missed', 'Missed'], ['cancelled', 'Cancelled']]
+    };
+    function dateInput(t) { if (!t) return ''; var d = new Date(t * 1000); return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0'); }
+    function agentNodes() { return (host.nodes || []).filter(function (n) { return n.mtype == 2; }); }
+    function nodeOnline(id) { var n = (host.nodes || []).find(function (x) { return x._id == id; }); return n != null && (n.conn & 1) != 0; }
+
+    // Turn the address's filters into the server's filter object
+    function serverFilters(query) {
+        var f = {};
+        if (query.script) f.scriptId = query.script;
+        if (query.device) f.nodeIds = [query.device];
+        else if (query.group) f.nodeIds = agentNodes().filter(function (n) { return n.meshid == query.group; }).map(function (n) { return n._id; }).concat(['none']);
+        ['status', 'source', 'runBy', 'q'].forEach(function (k) { if (query[k]) f[k] = query[k]; });
+        if (query.from) f.from = Math.floor(new Date(query.from + 'T00:00').getTime() / 1000);
+        if (query.to) f.to = Math.floor(new Date(query.to + 'T23:59:59').getTime() / 1000);
+        return f;
+    }
+
+    function FilterBar(props) {
+        var q = props.query, kind = props.kind;
+        var text = useState({ runBy: q.runBy || '', q: q.q || '' });
+        var timer = useRef(null);
+        var set = function (k, v) { var n = Object.assign({}, q); n[k] = v; delete n.page; if (k == 'group') delete n.device; props.onChange(n); };
+        // Typing waits briefly before searching
+        var typed = function (k, v) { text[1](Object.assign({}, text[0], (function () { var o = {}; o[k] = v; return o; })())); clearTimeout(timer.current); timer.current = setTimeout(function () { set(k, v.trim()); }, 400); };
+        var scripts = props.items.filter(function (i) { return i.type == 'script'; }).sort(function (a, b) { return a.name.localeCompare(b.name); });
+        var nodes = agentNodes().filter(function (n) { return !q.group || n.meshid == q.group; }).sort(function (a, b) { return a.name.localeCompare(b.name); });
+        var groups = Object.keys(host.meshes || {}).map(function (k) { return host.meshes[k]; }).filter(function (m) { return m.mtype == 2; }).sort(function (a, b) { return a.name.localeCompare(b.name); });
+        var active = Object.keys(q).filter(function (k) { return k != 'page'; }).length > 0;
+        return html`<div class="st-filters">
+            <select class="form-select form-select-sm" aria-label="Script" value=${q.script || ''} onChange=${function (e) { set('script', e.target.value); }}>
+                <option value="">All scripts</option>${scripts.map(function (sc) { return html`<option value=${sc._id}>${sc.name}</option>`; })}
+            </select>
+            <select class="form-select form-select-sm" aria-label="Device group" value=${q.group || ''} onChange=${function (e) { set('group', e.target.value); }}>
+                <option value="">All device groups</option>${groups.map(function (m) { return html`<option value=${m._id}>${m.name}</option>`; })}
+            </select>
+            <select class="form-select form-select-sm" aria-label="Device" value=${q.device || ''} onChange=${function (e) { set('device', e.target.value); }}>
+                <option value="">All devices</option>${nodes.map(function (n) { return html`<option value=${n._id}>${n.name}</option>`; })}
+            </select>
+            <select class="form-select form-select-sm" aria-label="Status" value=${q.status || ''} onChange=${function (e) { set('status', e.target.value); }}>
+                ${STATUS_OPTIONS[kind].map(function (o) { return html`<option value=${o[0]}>${o[1]}</option>`; })}
+            </select>
+            ${kind != 'schedules' ? html`<select class="form-select form-select-sm" aria-label="Source" value=${q.source || ''} onChange=${function (e) { set('source', e.target.value); }}>
+                <option value="">Manual and scheduled</option><option value="manual">Manual runs</option><option value="schedule">Scheduled runs</option>
+            </select>` : null}
+            <input type="search" class="form-control form-control-sm" placeholder=${kind == 'schedules' ? 'Created by' : 'Run by'} aria-label=${kind == 'schedules' ? 'Created by' : 'Run by'} value=${text[0].runBy} onInput=${function (e) { typed('runBy', e.target.value); }} />
+            ${kind == 'history' ? html`
+                <input type="search" class="form-control form-control-sm st-filter-wide" placeholder="Search output" aria-label="Search output" value=${text[0].q} onInput=${function (e) { typed('q', e.target.value); }} />
+                <label class="st-filter-date">From <input type="date" class="form-control form-control-sm" value=${q.from || ''} onChange=${function (e) { set('from', e.target.value); }} /></label>
+                <label class="st-filter-date">To <input type="date" class="form-control form-control-sm" value=${q.to || ''} onChange=${function (e) { set('to', e.target.value); }} /></label>` : null}
+            ${active ? html`<button class="btn btn-sm btn-link" onClick=${function () { text[1]({ runBy: '', q: '' }); props.onChange({}); }}>Clear filters</button>` : null}
+        </div>`;
+    }
+
+    function Pager(props) {
+        var page = props.page, pages = Math.max(1, Math.ceil(props.total / PAGE_SIZE));
+        if (props.total == 0) return null;
+        var from = (page - 1) * PAGE_SIZE + 1, to = Math.min(props.total, page * PAGE_SIZE);
+        return html`<div class="st-pager">
+            <span>${from}–${to} of ${props.total}</span>
+            ${pages > 1 ? html`<div class="btn-group btn-group-sm">
+                <button class="btn st-btn-quiet" disabled=${page <= 1} onClick=${function () { props.onPage(page - 1); }} aria-label="Previous page">‹ Previous</button>
+                <button class="btn st-btn-quiet" disabled=${page >= pages} onClick=${function () { props.onPage(page + 1); }} aria-label="Next page">Next ›</button>
+            </div>` : null}
+        </div>`;
+    }
+
+    function DeviceCell(props) {
+        var n = (host.nodes || []).find(function (x) { return x._id == props.id; });
+        return html`<span class="st-device-cell">
+            <span class=${'st-dot ' + (nodeOnline(props.id) ? 'st-dot-on' : 'st-dot-off')} title=${nodeOnline(props.id) ? 'Online' : 'Offline'}></span>
+            <a href="#" onClick=${function (e) { e.preventDefault(); if (typeof host.gotoDevice == 'function') host.gotoDevice(props.id, 19); }} title="Open this device's page">${nodeName(props.id)}</a>
+            ${n ? html`<span class="st-script-path">${meshName(n.meshid)}</span>` : null}
+        </span>`;
+    }
+
+    // Loads one page of a server-wide list, and reloads it when the server reports changes
+    function useServerList(method, query) {
+        var st = useState({ loading: true, error: null, total: 0, rows: [] }), state = st[0], set = st[1];
+        var page = Math.max(1, Number(query.page) || 1);
+        var key = JSON.stringify(query);
+        var load = useCallback(function () {
+            return ST.rpc(method, { filters: serverFilters(query), skip: (page - 1) * PAGE_SIZE, limit: PAGE_SIZE }).then(function (r) {
+                set({ loading: false, error: null, total: r.total, rows: r.jobs || r.schedules || [], extra: r });
+            }, function (e) { set({ loading: false, error: e.message, total: 0, rows: [] }); });
+        }, [method, key]);
+        useEffect(function () { set(function (o) { return Object.assign({}, o, { loading: true }); }); load(); }, [load]);
+        useEffect(function () {
+            var timer = null;
+            return ST.onInvalidate(function (m) {
+                if (!(m.nodeIds && m.nodeIds.length) && !(m.scriptIds && m.scriptIds.length)) return;
+                clearTimeout(timer); timer = setTimeout(load, 600);
+            });
+        }, [load]);
+        return { state: state, page: page, reload: load };
+    }
+
+    // Selection of rows by id, kept to rows still on the page
+    function useSelection(rows) {
+        var sel = useState(new Set()), selected = sel[0];
+        var ids = rows.map(function (r) { return r._id; });
+        var present = new Set(Array.from(selected).filter(function (id) { return ids.indexOf(id) >= 0; }));
+        return {
+            ids: present,
+            has: function (id) { return present.has(id); },
+            toggle: function (id) { var n = new Set(present); if (n.has(id)) n.delete(id); else n.add(id); sel[1](n); },
+            all: ids.length > 0 && ids.every(function (id) { return present.has(id); }),
+            toggleAll: function () { sel[1](ids.every(function (id) { return present.has(id); }) ? new Set() : new Set(ids)); },
+            clear: function () { sel[1](new Set()); }
+        };
+    }
+
+    function ListFrame(props) {
+        return html`<div class="st-list-page">
+            <div class="st-list-head"><h2 class="h4 mb-0">${props.title}</h2><span class="text-body-secondary small">${props.subtitle}</span></div>
+            <${FilterBar} kind=${props.kind} query=${props.query} items=${props.items} onChange=${props.onQuery} />
+            ${props.bulk}
+            <div class="card"><div class="card-body p-0">
+                ${props.state.error ? html`<div class="alert alert-danger m-3">${props.state.error}</div>`
+                : props.state.loading && props.state.rows.length == 0 ? html`<div class="text-center py-5"><${ST.Spinner} /></div>`
+                : props.state.rows.length == 0 ? html`<${ST.Empty} icon=${props.emptyIcon}>${props.empty}</${ST.Empty}>`
+                : props.children}
+            </div></div>
+            <${Pager} total=${props.state.total} page=${props.page} onPage=${function (pg) { props.onQuery(Object.assign({}, props.query, { page: pg })); }} />
+        </div>`;
+    }
+
+    function BulkBar(props) {
+        if (props.count == 0) return null;
+        return html`<div class="st-bulk" role="region" aria-label="Selected items">
+            <strong>${props.count} selected</strong>
+            ${props.children}
+            <button class="btn btn-sm btn-link" onClick=${props.onClear}>Clear selection</button>
+        </div>`;
+    }
+    function bulkResult(r, verb) {
+        ST.ui.toast(verb + ' ' + plural(r.done, 'item') + (r.skipped ? '. Skipped ' + r.skipped + ' that had changed or that you can\'t see.' : '.'));
+    }
+
+    function QueueSection(props) {
+        var list = useServerList('queue', props.query), state = list.state;
+        var sel = useSelection(state.rows);
+        var stale = state.extra ? state.extra.staleSeconds : 1800;
+        var rows = state.rows;
+        var runnable = rows.filter(function (j) { return sel.has(j._id) && j.dispatchTime == null; }).length;
+        var cancel = function (ids) {
+            ST.ui.confirm({ title: 'Cancel ' + plural(ids.length, 'run') + '?', body: 'They won\'t run. Runs from schedules skip this occurrence; the schedules carry on. Runs already sent to a device may still finish there.', confirmText: 'Cancel runs', danger: true })
+            .then(function (ok) { if (ok) ST.ui.attempt(ST.rpc('cancelJobs', { jobIds: ids })).then(function (r) { if (r) { bulkResult(r, 'Cancelled'); sel.clear(); list.reload(); } }); });
+        };
+        var runNow = function (ids) { ST.ui.attempt(ST.rpc('runJobsNow', { jobIds: ids })).then(function (r) { if (r) { bulkResult(r, 'Started'); sel.clear(); list.reload(); } }); };
+        return html`<${ListFrame} kind="queue" title="Queue" subtitle="Runs waiting, scheduled or in progress on every device you can see" query=${props.query} items=${props.items} onQuery=${props.onQuery}
+            state=${state} page=${list.page} empty="Nothing is queued." emptyIcon="list-task"
+            bulk=${html`<${BulkBar} count=${sel.ids.size} onClear=${sel.clear}>
+                <button class="btn btn-sm btn-primary" disabled=${runnable == 0} onClick=${function () { runNow(Array.from(sel.ids)); }}><${ST.Icon} name="play-fill" class="me-1" />Run now</button>
+                <button class="btn btn-sm btn-outline-danger" onClick=${function () { cancel(Array.from(sel.ids)); }}><${ST.Icon} name="x-lg" class="me-1" />Cancel</button>
+            </${BulkBar}>`}>
+            <div class="table-responsive"><table class="table table-sm table-hover st-table mb-0">
+                <thead><tr>
+                    <th class="st-col-check"><input class="form-check-input" type="checkbox" aria-label="Select all on this page" checked=${sel.all} onChange=${sel.toggleAll} /></th>
+                    <th>Script</th><th>Device</th><th>Status</th><th>When</th><th>Run by</th><th class="st-col-actions"><span class="visually-hidden">Actions</span></th>
+                </tr></thead>
+                <tbody>${rows.map(function (j) {
+                    var status = j.state == 'stale' ? 'stale' : j.state;
+                    return html`<tr key=${j._id} class=${sel.has(j._id) ? 'table-active' : ''}>
+                        <td class="st-col-check"><input class="form-check-input" type="checkbox" aria-label=${'Select ' + j.scriptName} checked=${sel.has(j._id)} onChange=${function () { sel.toggle(j._id); }} /></td>
+                        <td>${j.scriptName}</td>
+                        <td><${DeviceCell} id=${j.node} /></td>
+                        <td><${ST.StatusBadge} status=${status} title=${status == 'stale' ? 'Sent over ' + ST.fmt.span(stale) + ' ago without a result. The device may have restarted, or the script is still running.' : null} /></td>
+                        <td class="text-nowrap">${j.dispatchTime ? html`Sent <${ST.Time} t=${j.dispatchTime} />`
+                            : (j.dontQueueUntil > ST.now()) ? html`Due <${ST.Time} t=${j.dontQueueUntil} />` : html`Queued <${ST.Time} t=${j.queueTime} />`}
+                            ${(j.expiresAt != null && j.dispatchTime == null && j.expiresAt > ST.now()) ? html`<div class="text-body-secondary small">Skipped if not sent by ${ST.fmt.time(j.expiresAt)}</div>` : null}</td>
+                        <td>${j.runBy}${j.jobSchedule ? html` <span class="text-body-secondary small">(schedule)</span>` : null}</td>
+                        <td class="st-col-actions"><div class="btn-group btn-group-sm">
+                            ${j.dispatchTime == null ? html`<button class="btn st-btn-quiet" title="Run now" onClick=${function () { runNow([j._id]); }}><${ST.Icon} name="play-fill" /><span class="visually-hidden">Run now</span></button>` : null}
+                            <button class="btn btn-outline-danger" title="Cancel this run" onClick=${function () { cancel([j._id]); }}><${ST.Icon} name="x-lg" /><span class="visually-hidden">Cancel</span></button>
+                        </div></td>
+                    </tr>`; })}</tbody>
+            </table></div>
+        </${ListFrame}>`;
+    }
+
+    function SchedulesSection(props) {
+        var list = useServerList('schedules', props.query), state = list.state;
+        var sel = useSelection(state.rows);
+        var a = props.scheduleActions;
+        var bulk = function (action) {
+            var ids = Array.from(sel.ids);
+            var go = function () { ST.ui.attempt(ST.rpc('scheduleAction', { scheduleIds: ids, action: action })).then(function (r) { if (r) { bulkResult(r, action == 'delete' ? 'Deleted' : action == 'pause' ? 'Paused' : 'Resumed'); sel.clear(); list.reload(); } }); };
+            if (action != 'delete') { go(); return; }
+            ST.ui.confirm({ title: 'Delete ' + plural(ids.length, 'schedule') + '?', body: 'They stop running, and their pending runs are cancelled. Past runs stay in history.', confirmText: 'Delete schedules', danger: true }).then(function (ok) { if (ok) go(); });
+        };
+        var runNow = function (s) { ST.ui.attempt(ST.rpc('runScript', { scriptId: s.scriptId, nodeIds: [s.node] }), props.scriptName(s.scriptId) + ' queued on ' + nodeName(s.node) + '. The schedule is unchanged.'); };
+        return html`<${ListFrame} kind="schedules" title="Schedules" subtitle="Every schedule on the devices you can see, soonest first" query=${props.query} items=${props.items} onQuery=${props.onQuery}
+            state=${state} page=${list.page} empty="No schedules." emptyIcon="clock"
+            bulk=${html`<${BulkBar} count=${sel.ids.size} onClear=${sel.clear}>
+                <button class="btn btn-sm st-btn-quiet" onClick=${function () { bulk('pause'); }}><${ST.Icon} name="pause-fill" class="me-1" />Pause</button>
+                <button class="btn btn-sm st-btn-quiet" onClick=${function () { bulk('resume'); }}><${ST.Icon} name="play-fill" class="me-1" />Resume</button>
+                <button class="btn btn-sm btn-outline-danger" onClick=${function () { bulk('delete'); }}><${ST.Icon} name="trash3" class="me-1" />Delete</button>
+            </${BulkBar}>`}>
+            <div class="table-responsive"><table class="table table-sm table-hover st-table mb-0">
+                <thead><tr>
+                    <th class="st-col-check"><input class="form-check-input" type="checkbox" aria-label="Select all on this page" checked=${sel.all} onChange=${sel.toggleAll} /></th>
+                    <th>Script</th><th>Device</th><th>Repeat</th><th>Next run</th><th>Last run</th><th>Created by</th><th class="st-col-actions"><span class="visually-hidden">Actions</span></th>
+                </tr></thead>
+                <tbody>${state.rows.map(function (s) { return html`<tr key=${s._id} class=${sel.has(s._id) ? 'table-active' : ''}>
+                    <td class="st-col-check"><input class="form-check-input" type="checkbox" aria-label=${'Select ' + props.scriptName(s.scriptId)} checked=${sel.has(s._id)} onChange=${function () { sel.toggle(s._id); }} /></td>
+                    <td>${props.scriptName(s.scriptId)}</td>
+                    <td><${DeviceCell} id=${s.node} /></td>
+                    <td>${ST.fmt.recurrence(s)}${ST.fmt.zoneNote(s) ? ' (' + ST.fmt.zoneNote(s) + ')' : ''}<div class="text-body-secondary small">${ST.fmt.policy(s)}${s.endAt ? ', until ' + ST.fmt.time(s.endAt) : ''}</div></td>
+                    <td>${s.paused ? html`<${ST.StatusBadge} status="paused" />` : html`<${ST.Time} t=${s.nextRun} empty="Not scheduled" />`}</td>
+                    <td><${ST.Time} t=${s.lastRun} empty="Never" /></td>
+                    <td>${s.scheduledBy}</td>
+                    <td class="st-col-actions"><div class="btn-group btn-group-sm">
+                        <button class="btn st-btn-quiet" title="Edit this schedule" onClick=${function () { a.editSchedule(s); }}><${ST.Icon} name="pencil" /><span class="visually-hidden">Edit</span></button>
+                        <button class="btn st-btn-quiet" title="Run now, without changing the schedule" onClick=${function () { runNow(s); }}><${ST.Icon} name="send" /><span class="visually-hidden">Run now</span></button>
+                        <button class="btn st-btn-quiet" title=${s.paused ? 'Resume this schedule' : 'Pause this schedule'} onClick=${function () { a.pauseSchedule(s, !s.paused); }}><${ST.Icon} name=${s.paused ? 'play-fill' : 'pause-fill'} /><span class="visually-hidden">${s.paused ? 'Resume' : 'Pause'}</span></button>
+                        <button class="btn btn-outline-danger" title="Delete this schedule" onClick=${function () { a.deleteSchedule(s); }}><${ST.Icon} name="trash3" /><span class="visually-hidden">Delete</span></button>
+                    </div></td>
+                </tr>`; })}</tbody>
+            </table></div>
+        </${ListFrame}>`;
+    }
+
+    function HistorySection(props) {
+        var list = useServerList('history', props.query), state = list.state;
+        var open = function (j) {
+            ST.rpc('job', { id: j._id }).then(function (full) { props.openOutput(full); }, function (e) { ST.ui.toast(e.message, 'error'); });
+        };
+        return html`<${ListFrame} kind="history" title="History" subtitle="Finished, missed and cancelled runs on every device you can see, newest first" query=${props.query} items=${props.items} onQuery=${props.onQuery}
+            state=${state} page=${list.page} empty="No runs match." emptyIcon="clock-history">
+            <div class="table-responsive"><table class="table table-sm table-hover st-table mb-0">
+                <thead><tr><th>Finished</th><th>Script</th><th>Device</th><th>Status</th><th>Took</th><th>Run by</th><th>Output</th></tr></thead>
+                <tbody>${state.rows.map(function (j) { var out = ST.jobOutput(j); return html`<tr key=${j._id} class="st-clickable" tabindex="0" onClick=${function (e) { if (e.target.closest('a')) return; open(j); }} onKeyDown=${function (e) { if (e.key == 'Enter') open(j); }}>
+                    <td class="text-nowrap"><${ST.Time} t=${j.completeTime} /></td>
+                    <td class="text-nowrap">${j.scriptName}</td>
+                    <td><${DeviceCell} id=${j.node} /></td>
+                    <td><${ST.StatusBadge} status=${ST.jobStatus(j, true)} /></td>
+                    <td class="text-nowrap">${(j.completeTime && j.dispatchTime && !j.missed) ? ST.fmt.duration(j.completeTime - j.dispatchTime) : ''}</td>
+                    <td>${j.runBy}${j.jobSchedule ? html` <span class="text-body-secondary small">(schedule)</span>` : null}</td>
+                    <td><div class="st-output-preview">${out ? out.split('\n')[0] : html`<span class="text-body-tertiary">No output</span>`}</div></td>
+                </tr>`; })}</tbody>
+            </table></div>
+        </${ListFrame}>`;
+    }
+
     // ---- App ----
 
     function App() {
@@ -361,7 +621,8 @@
         if (!state.init.caps.manage) return html`<div class="alert alert-warning m-3"><${ST.Icon} name="lock" class="me-1" />The ScriptTask page is for ScriptTask managers. You can run library scripts from a device's ScriptTask tab.</div>`;
 
         var section = route[0].section;
-        var nav = [['library', 'Library', 'folder2-open'], ['settings', 'Settings', 'gear']];
+        var nav = [['library', 'Library', 'folder2-open'], ['queue', 'Queue', 'list-task'], ['schedules', 'Schedules', 'clock'], ['history', 'History', 'clock-history'], ['settings', 'Settings', 'gear']];
+        var setQuery = function (q) { go({ section: section, id: null, query: q }); };
         return html`<div class="st-shell">
             <nav class="st-sidenav" aria-label="ScriptTask">
                 <div class="st-brand"><${ST.Icon} name="file-earmark-code" class="me-2" />ScriptTask</div>
@@ -385,6 +646,9 @@
                         : html`<${ScriptWorkspace} key=${selected._id} item=${selected} vars=${state.vars} actions=${actions} scheduleActions=${scheduleActions} onDirty=${function (d) { dirty.current = d; }} />`}
                     </div>
                 </div>` : null}
+                ${section == 'queue' ? html`<${QueueSection} query=${route[0].query} items=${items} onQuery=${setQuery} />` : null}
+                ${section == 'schedules' ? html`<${SchedulesSection} query=${route[0].query} items=${items} onQuery=${setQuery} scheduleActions=${scheduleActions} scriptName=${scriptName} />` : null}
+                ${section == 'history' ? html`<${HistorySection} query=${route[0].query} items=${items} onQuery=${setQuery} openOutput=${actions.openOutput} />` : null}
                 ${section == 'settings' ? html`<div class="st-settings-page">
                     <h2 class="h4 mb-3">Settings</h2>
                     <div class="card"><div class="card-body">

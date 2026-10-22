@@ -152,6 +152,24 @@ module.exports.CreateDB = function(meshserver) {
         obj.getExpiredJobs = function(nowTime) {
             return obj.scriptFile.find( { type: 'job', completeTime: null, dispatchTime: null, expiresAt: { $lte: nowTime } } ).toArray();
         };
+        // Paged job queries for the ScriptTask page
+        obj.findJobs = function(find, sort, skip, limit) {
+            return obj.scriptFile.find(Object.assign({ type: 'job' }, find)).sort(sort).skip(skip || 0).limit(limit || 50).toArray();
+        };
+        obj.countJobs = function(find) {
+            return obj.scriptFile.countDocuments(Object.assign({ type: 'job' }, find));
+        };
+        obj.getAllIncompleteJobs = function() {
+            return obj.scriptFile.find( { type: 'job', completeTime: null } ).toArray();
+        };
+        obj.getAllSchedules = function() {
+            return obj.scriptFile.find( { type: 'jobSchedule' } ).toArray();
+        };
+        // Every device that has a job or schedule
+        obj.getNodeIdsInUse = function() {
+            return obj.scriptFile.find( { type: { $in: [ 'job', 'jobSchedule' ] } } ).project( { node: 1 } ).toArray()
+            .then((docs) => Array.from(new Set(docs.map(d => d.node).filter(n => typeof n == 'string'))));
+        };
         obj.getSettings = function() {
             return obj.scriptFile.find( { type: 'settings' } ).toArray().then((docs) => docs[0] || {});
         };

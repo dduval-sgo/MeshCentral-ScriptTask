@@ -478,20 +478,25 @@ module.exports.scripttask = function (parent) {
         return { accepted: accepted.length, refused: refused };
     };
 
+    // Cancel an incomplete job (permission already checked)
+    obj.cancelJobDoc = async function(job, userName) {
+        if (job.dispatchTime == null) {
+            await obj.db.delete(job._id);
+        } else {
+            // Already sent to the device. Close it here; a late result from the agent is still recorded.
+            await obj.db.update(job._id, { completeTime: Math.floor(new Date() / 1000), cancelled: true, errorVal: 'Cancelled by ' + userName + ' after it was sent to the device.' });
+        }
+        // Cancelling a schedule's run skips that occurrence; the schedule carries on with its next one
+        if (job.jobSchedule != null) { await obj.closeSlot(job.jobSchedule, job); await obj.ensureScheduleJobs(job.jobSchedule); }
+        obj.invalidate({ nodeIds: [job.node], scriptIds: [job.scriptId] });
+    };
+
     obj.rpc.cancelJob = async function(args, session) {
         var job = await getOne(args.jobId, 'job');
         await obj.requireNode(session, job.node);
         obj.requireOwnerOrManage(session, job.runById);
         if (job.completeTime != null) throw new RpcError('This job has already finished.');
-        if (job.dispatchTime == null) {
-            await obj.db.delete(job._id);
-        } else {
-            // Already sent to the device. Close it here; a late result from the agent is still recorded.
-            await obj.db.update(job._id, { completeTime: Math.floor(new Date() / 1000), cancelled: true, errorVal: 'Cancelled by ' + session.user.name + ' after it was sent to the device.' });
-        }
-        // Cancelling a schedule's run skips that occurrence; the schedule carries on with its next one
-        if (job.jobSchedule != null) { await obj.closeSlot(job.jobSchedule, job); await obj.ensureScheduleJobs(job.jobSchedule); }
-        obj.invalidate({ nodeIds: [job.node], scriptIds: [job.scriptId] });
+        await obj.cancelJobDoc(job, session.user.name);
         return true;
     };
 
@@ -509,13 +514,17 @@ module.exports.scripttask = function (parent) {
         return jobs.length;
     };
 
+    obj.deleteScheduleDoc = async function(sched) {
+        await obj.db.deletePendingJobsForSchedule(sched._id);
+        await obj.db.delete(sched._id);
+        obj.invalidate({ nodeIds: [sched.node], scriptIds: [sched.scriptId] });
+    };
+
     obj.rpc.deleteSchedule = async function(args, session) {
         var sched = await getOne(args.scheduleId, 'jobSchedule');
         await obj.requireNode(session, sched.node);
         obj.requireOwnerOrManage(session, sched.scheduledById);
-        await obj.db.deletePendingJobsForSchedule(sched._id);
-        await obj.db.delete(sched._id);
-        obj.invalidate({ nodeIds: [sched.node], scriptIds: [sched.scriptId] });
+        await obj.deleteScheduleDoc(sched);
         return true;
     };
 
@@ -532,11 +541,8 @@ module.exports.scripttask = function (parent) {
         return true;
     };
 
-    obj.rpc.pauseSchedule = async function(args, session) {
-        var existing = await getOne(args.scheduleId, 'jobSchedule');
-        await obj.requireNode(session, existing.node);
-        obj.requireOwnerOrManage(session, existing.scheduledById);
-        if (args.paused === true) {
+    obj.pauseScheduleDoc = async function(existing, paused) {
+        if (paused) {
             await obj.db.deleteUndispatchedJobsForSchedule(existing._id);
             await obj.db.update(existing._id, { paused: true, nextRun: null });
         } else {
@@ -545,7 +551,189 @@ module.exports.scripttask = function (parent) {
             await obj.ensureScheduleJobs(existing._id);
         }
         obj.invalidate({ nodeIds: [existing.node], scriptIds: [existing.scriptId] });
+    };
+
+    obj.rpc.pauseSchedule = async function(args, session) {
+        var existing = await getOne(args.scheduleId, 'jobSchedule');
+        await obj.requireNode(session, existing.node);
+        obj.requireOwnerOrManage(session, existing.scheduledById);
+        await obj.pauseScheduleDoc(existing, args.paused === true);
         return true;
+    };
+
+    // -- Server-wide queue, schedules and history (managers) --
+
+    var STALE_SECONDS = 30 * 60; // A run sent this long ago without a result is flagged
+    var PAGE_MAX = 200;
+
+    // Devices this user can see, out of those with ScriptTask jobs or schedules. Null means no restriction is needed.
+    // Uses MeshCentral's own rights check per device, cached briefly per user.
+    var visibleCache = {};
+    obj.visibleNodes = async function(session) {
+        var key = session.user._id, cached = visibleCache[key];
+        if (cached == null || cached.until < Date.now()) cached = visibleCache[key] = { nodes: new Set(), checked: new Set(), until: Date.now() + 30000 };
+        // Devices seen for the first time since the cache started are checked now, so new jobs show straight away
+        var ids = (await obj.db.getNodeIdsInUse()).filter(function(id) { return !cached.checked.has(id); });
+        await Promise.all(ids.map(function(nodeId) {
+            cached.checked.add(nodeId);
+            return new Promise(function(resolve) {
+                obj.meshServer.webserver.GetNodeWithRights(session.domain, session.user, nodeId, function(node, rights, visible) { if (node != null && visible) cached.nodes.add(nodeId); resolve(); });
+            });
+        }));
+        return cached.nodes;
+    };
+    function page(args) {
+        return { skip: Math.max(0, Math.floor(Number(args.skip) || 0)), limit: Math.min(PAGE_MAX, Math.max(1, Math.floor(Number(args.limit) || 50))) };
+    }
+    function cleanFilters(f) {
+        f = (f != null && typeof f == 'object') ? f : {};
+        var out = {};
+        if (typeof f.scriptId == 'string' && f.scriptId) out.scriptId = f.scriptId.substring(0, 128);
+        if (Array.isArray(f.nodeIds) && f.nodeIds.length) out.nodeIds = f.nodeIds.filter(function(n) { return typeof n == 'string'; }).slice(0, 5000);
+        if (typeof f.runBy == 'string' && f.runBy.trim()) out.runBy = f.runBy.trim().substring(0, 128);
+        if (typeof f.status == 'string' && f.status) out.status = f.status;
+        if (f.source == 'manual' || f.source == 'schedule') out.source = f.source;
+        if (Number(f.from) > 0) out.from = Math.floor(Number(f.from));
+        if (Number(f.to) > 0) out.to = Math.floor(Number(f.to));
+        if (typeof f.q == 'string' && f.q.trim()) out.q = f.q.trim().substring(0, 200);
+        return out;
+    }
+    function escapeRegex(s) { return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); }
+    // The devices a query may cover: the requested ones that this user can see
+    function nodeScope(filters, visible) {
+        var ids = filters.nodeIds ? filters.nodeIds.filter(function(n) { return visible.has(n); }) : Array.from(visible);
+        return ids;
+    }
+    // A queued job's state, as the pages show it
+    function queueStatus(j, now) {
+        if (j.dispatchTime != null) return (now - j.dispatchTime > STALE_SECONDS) ? 'stale' : 'dispatched';
+        if (j.expiresAt != null && j.expiresAt <= now) return 'missed';
+        if (j.dontQueueUntil != null && j.dontQueueUntil > now) return 'scheduled';
+        return (obj.meshServer.webserver.wsagents[j.node] != null) ? 'queued' : 'waiting';
+    }
+
+    obj.rpc.queue = async function(args, session) {
+        obj.requireManage(session);
+        var filters = cleanFilters(args.filters), p = page(args), now = Math.floor(Date.now() / 1000);
+        var visible = await obj.visibleNodes(session);
+        var nodes = new Set(nodeScope(filters, visible));
+        var runBy = filters.runBy ? new RegExp(escapeRegex(filters.runBy), 'i') : null;
+        var jobs = (await obj.db.getAllIncompleteJobs()).filter(function(j) {
+            if (!nodes.has(j.node)) return false;
+            if (filters.scriptId && j.scriptId != filters.scriptId) return false;
+            if (runBy && !runBy.test(j.runBy || '')) return false;
+            if (filters.source == 'manual' && j.jobSchedule != null) return false;
+            if (filters.source == 'schedule' && j.jobSchedule == null) return false;
+            j.state = queueStatus(j, now);
+            j.online = obj.meshServer.webserver.wsagents[j.node] != null;
+            if (filters.status && j.state != filters.status) return false;
+            return true;
+        });
+        // Running and overdue first, then by when they are due
+        var order = { stale: 0, dispatched: 1, missed: 2, queued: 3, waiting: 4, scheduled: 5 };
+        jobs.sort(function(a, b) { return (order[a.state] - order[b.state]) || ((a.dontQueueUntil || 0) - (b.dontQueueUntil || 0)); });
+        return { total: jobs.length, jobs: jobs.slice(p.skip, p.skip + p.limit), staleSeconds: STALE_SECONDS };
+    };
+
+    obj.rpc.schedules = async function(args, session) {
+        obj.requireManage(session);
+        var filters = cleanFilters(args.filters), p = page(args);
+        var visible = await obj.visibleNodes(session);
+        var nodes = new Set(nodeScope(filters, visible));
+        var runBy = filters.runBy ? new RegExp(escapeRegex(filters.runBy), 'i') : null;
+        var list = (await obj.db.getAllSchedules()).filter(function(s) {
+            if (!nodes.has(s.node)) return false;
+            if (filters.scriptId && s.scriptId != filters.scriptId) return false;
+            if (runBy && !runBy.test(s.scheduledBy || '')) return false;
+            if (filters.status == 'paused' && s.paused !== true) return false;
+            if (filters.status == 'active' && s.paused === true) return false;
+            return true;
+        });
+        // Soonest first; paused last
+        list.sort(function(x, y) { return ((x.paused === true) - (y.paused === true)) || ((x.nextRun == null) - (y.nextRun == null)) || ((x.nextRun || 0) - (y.nextRun || 0)); });
+        return { total: list.length, schedules: list.slice(p.skip, p.skip + p.limit) };
+    };
+
+    obj.rpc.history = async function(args, session) {
+        obj.requireManage(session);
+        var filters = cleanFilters(args.filters), p = page(args);
+        var visible = await obj.visibleNodes(session);
+        var and = [ { completeTime: { $ne: null } }, { node: { $in: nodeScope(filters, visible) } } ];
+        if (filters.scriptId) and.push({ scriptId: filters.scriptId });
+        if (filters.runBy) and.push({ runBy: { $regex: new RegExp(escapeRegex(filters.runBy), 'i') } });
+        if (filters.source == 'manual') and.push({ jobSchedule: null });
+        if (filters.source == 'schedule') and.push({ jobSchedule: { $ne: null } });
+        if (filters.from) and.push({ completeTime: { $gte: filters.from } });
+        if (filters.to) and.push({ completeTime: { $lte: filters.to } });
+        switch (filters.status) {
+            case 'missed': and.push({ missed: true }); break;
+            case 'cancelled': and.push({ cancelled: true }); break;
+            case 'error': and.push({ errorVal: { $ne: null } }, { returnVal: null }, { missed: { $ne: true } }, { cancelled: { $ne: true } }); break;
+            case 'complete': and.push({ returnVal: { $ne: null } }, { cancelled: { $ne: true } }); break;
+        }
+        if (filters.q) { var re = new RegExp(escapeRegex(filters.q), 'i'); and.push({ $or: [ { returnVal: { $regex: re } }, { errorVal: { $regex: re } } ] }); }
+        var find = { $and: and };
+        var results = await Promise.all([ obj.db.countJobs(find), obj.db.findJobs(find, { completeTime: -1 }, p.skip, p.limit) ]);
+        // Lists carry the start of the output only; the full output comes from obj.rpc.job
+        var jobs = results[1].map(function(j) {
+            ['returnVal', 'errorVal'].forEach(function(k) { if (typeof j[k] == 'string' && j[k].length > 300) { j[k] = j[k].substring(0, 300); j.truncated = true; } });
+            return j;
+        });
+        return { total: results[0], jobs: jobs };
+    };
+
+    // One job in full (for the output viewer): managers for devices they can see, or users who can run scripts on its device
+    obj.rpc.job = async function(args, session) {
+        var job = await getOne(args.id, 'job');
+        if (obj.hasPerm(session.user, 'manage') && (await obj.visibleNodes(session)).has(job.node)) return job;
+        await obj.requireNode(session, job.node);
+        return job;
+    };
+
+    obj.rpc.cancelJobs = async function(args, session) {
+        obj.requireManage(session);
+        var visible = await obj.visibleNodes(session), done = 0, skipped = 0;
+        for (var id of (Array.isArray(args.jobIds) ? args.jobIds : []).slice(0, 1000)) {
+            var found = await obj.db.get(String(id));
+            var job = found[0];
+            if (job == null || job.type != 'job' || job.completeTime != null || !visible.has(job.node)) { skipped++; continue; }
+            await obj.cancelJobDoc(job, session.user.name);
+            done++;
+        }
+        return { done: done, skipped: skipped };
+    };
+
+    // Start queued or scheduled runs now instead of at their due time. Runs already sent are left alone.
+    obj.rpc.runJobsNow = async function(args, session) {
+        obj.requireManage(session);
+        var visible = await obj.visibleNodes(session), done = 0, skipped = 0, now = Math.floor(Date.now() / 1000), nodes = [];
+        for (var id of (Array.isArray(args.jobIds) ? args.jobIds : []).slice(0, 1000)) {
+            var found = await obj.db.get(String(id));
+            var job = found[0];
+            if (job == null || job.type != 'job' || job.completeTime != null || job.dispatchTime != null || !visible.has(job.node)) { skipped++; continue; }
+            var update = { dontQueueUntil: now };
+            if (job.expiresAt != null && job.expiresAt < now + 120) update.expiresAt = now + 120; // Don't let it expire before the queue gets to it
+            await obj.db.update(job._id, update);
+            nodes.push(job.node);
+            done++;
+        }
+        if (done) { obj.queueRun(); obj.invalidate({ nodeIds: Array.from(new Set(nodes)) }); }
+        return { done: done, skipped: skipped };
+    };
+
+    obj.rpc.scheduleAction = async function(args, session) {
+        obj.requireManage(session);
+        if (['pause', 'resume', 'delete'].indexOf(args.action) === -1) throw new RpcError('Unknown action.');
+        var visible = await obj.visibleNodes(session), done = 0, skipped = 0;
+        for (var id of (Array.isArray(args.scheduleIds) ? args.scheduleIds : []).slice(0, 1000)) {
+            var found = await obj.db.get(String(id));
+            var sched = found[0];
+            if (sched == null || sched.type != 'jobSchedule' || !visible.has(sched.node)) { skipped++; continue; }
+            if (args.action == 'delete') await obj.deleteScheduleDoc(sched);
+            else if ((args.action == 'pause') != (sched.paused === true)) await obj.pauseScheduleDoc(sched, args.action == 'pause');
+            done++;
+        }
+        return { done: done, skipped: skipped };
     };
 
     // -- Settings (managers) --

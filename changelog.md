@@ -28,6 +28,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - ScriptTask page for managers (My Server > Plugins > ScriptTask, or Open ScriptTask on a device tab): the script library with a folder tree, and for each script an editor plus its schedules, history and variables across all devices. Plugin settings moved here.
 - Code editor (CodeMirror 6, bundled): line numbers, PowerShell, Bash and Batch highlighting, search and replace, Tab indenting, and #variables# highlighted, with their values on hover and unknown ones underlined. Line endings (CRLF or LF) are kept, or can be changed; Bash is always saved with LF.
 - Code themes chosen per user, independent of the MeshCentral theme: Darcula, Dracula, Eclipse, GitHub Light/Dark, Monokai, Nord, One Dark, Solarized Light/Dark, Tokyo Night and VS Code Light/Dark. Auto picks GitHub Light or Darcula to match light or dark mode. Script output is shown in the same read-only code view.
+- Queue, Schedules and History sections on the ScriptTask page, covering every device the manager can see. Filters for script, device group, device, status, source and who ran it (History also searches output and filters by date). Filters are kept in the page address. Lists are paged, and refresh by themselves when runs change.
+- Bulk actions: cancel or run now for queued runs; pause, resume or delete schedules. A schedule's Run now runs the script once without changing the schedule.
+- Runs sent to a device more than 30 minutes ago without a result are flagged "No result yet".
 - Server tests (`node --test test/*.test.js`).
 
 ### Fixed
@@ -38,6 +41,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - Agents can only report results for their own jobs.
 - Jobs whose script was deleted are closed instead of retried every minute.
 - Editing a Bash script no longer fails on line-ending normalisation.
+- NeDB queries no longer inherit a previous query's sort and limit (a list could silently stop at 200 items).
 
 ### Removed
 - tail.DateTime dependency.

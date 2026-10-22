@@ -285,15 +285,16 @@ test('late runs keep the grid, or shift to the actual run time', async function 
     const ctx = createPlugin(); await ready(ctx);
     const keep = await scheduleOn(ctx, 'admin', { recur: 'hourly', interval: 1, startAt: nowS() - 250, anchor: 'slot' });
     const shift = await scheduleOn(ctx, 'admin', { recur: 'hourly', interval: 1, startAt: nowS() - 250, anchor: 'actual' });
+    const ranAt = nowS() - 10; // ran ~4 minutes late
     for (const r of [keep, shift]) {
         const j = (await jobsFor(ctx, r.sid))[0];
-        await ctx.plugin.db.update(j._id, { dispatchTime: nowS() - 10 }); // ran ~4 minutes late
-        agentSends(ctx.plugin, LIN, { pluginaction: 'jobComplete', jobId: j._id, scriptId: r.sid, retVal: 'ok', errVal: null, dispatchTime: nowS() - 10 });
+        await ctx.plugin.db.update(j._id, { dispatchTime: ranAt });
+        agentSends(ctx.plugin, LIN, { pluginaction: 'jobComplete', jobId: j._id, scriptId: r.sid, retVal: 'ok', errVal: null, dispatchTime: ranAt });
     }
     await wait(200);
     const k = await jobsFor(ctx, keep.sid), sh = await jobsFor(ctx, shift.sid);
     assert.strictEqual(k[1].slot - k[0].slot, 3600, 'keeps the original grid');
-    assert.strictEqual(sh[1].slot, nowS() - 10 + 3600, 'next run an hour after it actually ran');
+    assert.strictEqual(sh[1].slot, ranAt + 3600, 'next run an hour after it actually ran');
     // Weekly schedules can't shift
     const wk = await scheduleOn(ctx, 'admin', { recur: 'weekly', interval: 1, daysOfWeek: [1], startAt: nowS() + 60, anchor: 'actual' });
     assert.strictEqual(wk.schedule.anchor, 'slot');
@@ -359,4 +360,92 @@ test('the ScriptTask page is for managers; the device tab is for everyone', asyn
     // Saving settings tells open pages to reload them
     await rpc(ctx.plugin, 'admin', 'saveSettings', { skipGraceSeconds: 180, defaultOfflineWindow: 7200 });
     assert.ok(ctx.events.some(function (e) { return e.ev.settings === true && e.targets[0] == 'server-allusers'; }));
+});
+
+// ---- Server-wide queue, schedules and history ----
+
+test('NeDB queries do not inherit sort or limit from the previous query', async function () {
+    const ctx = createPlugin(); await ready(ctx);
+    for (let i = 0; i < 5; i++) await ctx.plugin.db.addVariable('v' + i, 'global', null, String(i));
+    const limited = await ctx.plugin.db.scriptFile.find({ type: 'variable' }).sort({ name: -1 }).limit(2).toArray();
+    assert.strictEqual(limited.length, 2);
+    const all = await ctx.plugin.db.scriptFile.find({ type: 'variable' }).toArray();
+    assert.strictEqual(all.length, 5, 'a later query without limit gets everything');
+});
+
+test('server-wide lists: managers only, filtered, paged, and limited to visible devices', async function () {
+    const ctx = createPlugin(); await ready(ctx);
+    const p = ctx.plugin, now = nowS();
+    const up = (await rpc(p, 'admin', 'addScript', { name: 'Up', filetype: 'bash', content: 'uptime' })).data.id;
+    const disk = (await rpc(p, 'admin', 'addScript', { name: 'Disk', filetype: 'bash', content: 'df' })).data.id;
+    for (let i = 0; i < 3; i++) await rpc(p, 'admin', 'runScript', { scriptId: up, nodeIds: [LIN, WIN] });
+    await rpc(p, 'alice', 'runScript', { scriptId: disk, nodeIds: [LIN] });
+    await p.db.addJob({ scriptId: up, scriptName: 'Up', node: OTHER, runBy: 'admin' }); // a device admin can't see
+    await rpc(p, 'admin', 'addSchedule', { scriptId: disk, nodeIds: [WIN], schedule: { recur: 'daily', interval: 1, startAt: now + 3600 } });
+    // Finished jobs with output, for history
+    const done = async (node, script, name, fields) => { const r = await p.db.addJob({ scriptId: script, scriptName: name, node: node, runBy: 'alice' }); await p.db.update(r.insertedId, Object.assign({ dispatchTime: now - 60, completeTime: now - 30 }, fields)); };
+    await done(LIN, up, 'Up', { returnVal: 'load average 0.1' });
+    await done(LIN, disk, 'Disk', { returnVal: 'x'.repeat(1000) + ' needle' });
+    await done(WIN, disk, 'Disk', { errorVal: 'disk full', returnVal: null });
+    await done(OTHER, disk, 'Disk', { returnVal: 'secret' });
+
+    for (const m of ['queue', 'schedules', 'history', 'cancelJobs', 'runJobsNow', 'scheduleAction']) assert.strictEqual((await rpc(p, 'alice', m, {})).ok, false, m + ' is managers only');
+
+    let q = (await rpc(p, 'admin', 'queue', { limit: 4 })).data;
+    assert.strictEqual(q.total, 8, '6 + 1 manual runs and 1 scheduled run; the hidden device is left out');
+    assert.strictEqual(q.jobs.length, 4);
+    assert.ok(q.jobs.every(j => j.node != OTHER));
+    assert.strictEqual((await rpc(p, 'admin', 'queue', { filters: { scriptId: disk } })).data.total, 2);
+    assert.strictEqual((await rpc(p, 'admin', 'queue', { filters: { source: 'schedule' } })).data.total, 1);
+    assert.strictEqual((await rpc(p, 'admin', 'queue', { filters: { status: 'scheduled' } })).data.total, 1);
+    assert.strictEqual((await rpc(p, 'admin', 'queue', { filters: { status: 'waiting', nodeIds: [WIN] } })).data.total, 3, 'offline device: waiting');
+    assert.strictEqual((await rpc(p, 'admin', 'queue', { filters: { runBy: 'ALI' } })).data.total, 1, 'run-by filter is case-insensitive');
+
+    const s = (await rpc(p, 'admin', 'schedules', {})).data;
+    assert.strictEqual(s.total, 1);
+
+    let h = (await rpc(p, 'admin', 'history', { limit: 2 })).data;
+    assert.strictEqual(h.total, 3, 'hidden device left out of history');
+    assert.strictEqual(h.jobs.length, 2);
+    assert.strictEqual((await rpc(p, 'admin', 'history', { skip: 2, limit: 2 })).data.jobs.length, 1, 'second page');
+    assert.strictEqual((await rpc(p, 'admin', 'history', { filters: { status: 'error' } })).data.total, 1);
+    assert.strictEqual((await rpc(p, 'admin', 'history', { filters: { status: 'complete' } })).data.total, 2);
+    const found = (await rpc(p, 'admin', 'history', { filters: { q: 'NEEDLE' } })).data;
+    assert.strictEqual(found.total, 1, 'searches the whole output, case-insensitively');
+    assert.ok(found.jobs[0].truncated && found.jobs[0].returnVal.length == 300, 'list carries only the start of long output');
+    assert.ok((await rpc(p, 'admin', 'job', { id: found.jobs[0]._id })).data.returnVal.endsWith('needle'), 'full output on request');
+    assert.strictEqual((await rpc(p, 'admin', 'history', { filters: { q: 'a.*b' } })).data.total, 0, 'search text is literal, not a pattern');
+    // Full output: alice can see runs on a device she can run scripts on; bob can't
+    assert.ok((await rpc(p, 'alice', 'job', { id: found.jobs[0]._id })).ok);
+    assert.strictEqual((await rpc(p, 'bob', 'job', { id: found.jobs[0]._id })).ok, false);
+});
+
+test('bulk actions: cancel, run now, pause, resume and delete', async function () {
+    const ctx = createPlugin(); await ready(ctx);
+    const p = ctx.plugin, now = nowS();
+    const up = (await rpc(p, 'admin', 'addScript', { name: 'Up', filetype: 'bash', content: 'uptime' })).data.id;
+    await rpc(p, 'admin', 'runScript', { scriptId: up, nodeIds: [LIN, WIN] });
+    await rpc(p, 'admin', 'addSchedule', { scriptId: up, nodeIds: [LIN, WIN], schedule: { recur: 'hourly', interval: 1, startAt: now + 3600, offlinePolicy: 'skip' } });
+    const hidden = await p.db.addJob({ scriptId: up, scriptName: 'Up', node: OTHER, runBy: 'admin' });
+    let q = (await rpc(p, 'admin', 'queue', {})).data.jobs;
+    const scheduled = q.filter(j => j.state == 'scheduled');
+    // Run the scheduled ones now: due immediately, and their Skip deadline is pushed out so they don't expire first
+    const rn = (await rpc(p, 'admin', 'runJobsNow', { jobIds: scheduled.map(j => j._id) })).data;
+    assert.deepStrictEqual(rn, { done: 2, skipped: 0 });
+    q = (await rpc(p, 'admin', 'queue', {})).data.jobs;
+    assert.ok(q.filter(j => j.jobSchedule).every(j => j.dontQueueUntil <= nowS() && j.expiresAt >= nowS() + 100));
+    // Cancel everything, including an id on a hidden device (skipped)
+    const c = (await rpc(p, 'admin', 'cancelJobs', { jobIds: q.map(j => j._id).concat([hidden.insertedId]) })).data;
+    assert.deepStrictEqual(c, { done: 4, skipped: 1 });
+    q = (await rpc(p, 'admin', 'queue', {})).data.jobs;
+    assert.ok(q.every(j => j.jobSchedule != null), "only the schedules' next runs remain");
+    assert.strictEqual(q.length, 2);
+    const ids = (await rpc(p, 'admin', 'schedules', {})).data.schedules.map(s => s._id);
+    assert.deepStrictEqual((await rpc(p, 'admin', 'scheduleAction', { scheduleIds: ids, action: 'pause' })).data, { done: 2, skipped: 0 });
+    assert.ok((await rpc(p, 'admin', 'schedules', {})).data.schedules.every(s => s.paused));
+    assert.strictEqual((await rpc(p, 'admin', 'queue', {})).data.total, 0, 'pausing removed their pending runs');
+    await rpc(p, 'admin', 'scheduleAction', { scheduleIds: ids, action: 'resume' });
+    assert.strictEqual((await rpc(p, 'admin', 'queue', {})).data.total, 2);
+    await rpc(p, 'admin', 'scheduleAction', { scheduleIds: ids, action: 'delete' });
+    assert.deepStrictEqual([(await rpc(p, 'admin', 'schedules', {})).data.total, (await rpc(p, 'admin', 'queue', {})).data.total], [0, 0]);
 });

@@ -15,14 +15,31 @@ class NEMongo {
         this._find = null;
         this._proj = null;
         this._limit = null;
+        this._skip = null;
         this._sort = null;
         return this;
     }
     
     find(args, proj) {
+        // Every query starts fresh: sort, skip and limit must not carry over from the previous query
         this._find = args;
         this._proj = proj;
+        this._sort = null;
+        this._skip = null;
+        this._limit = null;
         return this;
+    }
+
+    skip(skip) {
+        this._skip = skip;
+        return this;
+    }
+
+    countDocuments(filter) {
+        var self = this;
+        return new Promise(function(resolve, reject) {
+            self.nedb.count(filter || {}, function(err, n) { if (err) reject(err); else resolve(n); });
+        });
     }
     
     project(args) {
@@ -44,7 +61,9 @@ class NEMongo {
     toArray(callback) {
         var self = this; 
         return new Promise(function(resolve, reject) {
-            self.nedb.find( self._find, self._proj ).sort(self._sort).limit(self._limit).exec((err, docs) => {
+            var cursor = self.nedb.find( self._find, self._proj ).sort(self._sort);
+            if (self._skip) cursor = cursor.skip(self._skip);
+            cursor.limit(self._limit).exec((err, docs) => {
               if (callback != null && typeof callback == 'function') callback(err, docs);
               if (err != null) reject(err);
               if (callback != null && typeof callback == 'function') callback(err, docs);
