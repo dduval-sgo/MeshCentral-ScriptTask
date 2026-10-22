@@ -11,7 +11,7 @@ Reference: MeshCentral source at `1.3.0` (`views/default3.handlebars` is the Mod
 | Rendering | Preact + htm, vendored (§4) |
 | Host UI | **Modern UI only.** Classic UI isn't supported. |
 | Minimum MeshCentral | **1.2.0** (§1, "Minimum version") |
-| Roles | **Admins** use the server page: library, batch runs, schedules, variables, settings. **Users** can only run existing library scripts on a single device from its device tab (§3.5). |
+| Roles | **Admins** use the server page: library, batch runs, schedules, variables, settings. **Users** can run and schedule existing library scripts on a single device from its device tab, and see all of that device's past runs (§3.5). |
 | Permissions | Built now, because the admin/user split depends on them (§3.5) |
 | Batch results view | Yes (§3.4) |
 | Substituted-script preview | Dropped. Manual runs are one-liners. |
@@ -107,7 +107,7 @@ MeshCentral never formally announced the Modern UI as stable. **1.2.0** is the p
 | **Schedules** | Every `jobSchedule`, **sorted by next run, soonest first**, with paused schedules last. Columns: readable recurrence ("Every 2 weeks on Mon, Thu at 09:00"), offline policy, last run (late runs flagged), next run, created by. Actions: **Edit**, **Pause/Resume**, **Run now**, **Delete**. Bulk select. |
 | **History** | Server-wide job log, paged and filtered on the server: script, device, group, status, run by, date range, and full-text search in output. Clicking a row opens an off-canvas **Output viewer** (§3.4). Rows from the same batch are grouped and can be expanded. |
 | **Variables** | One table for every scope, with proper target pickers (script picker, group picker, device picker). Columns: name, value (masked if flagged secret), scope, target. Search and scope filter. A "where used" link lists scripts that reference `#name#`. |
-| **Settings** | History retention (days, now hard-coded 90), history page size, queue tick interval, stale-dispatch threshold, default schedule time step, default indent per script type, **default offline policy and late-run anchoring for new schedules** (§3.6). Saved as a `settings` doc in the plugin DB. Per-user editor preferences (font size, wrap, tab vs spaces) go in localStorage. |
+| **Settings** | History retention (days, now hard-coded 90), history page size, queue tick interval, stale-dispatch threshold, default schedule time step, default indent per script type, **default offline policy and late-run anchoring for new schedules, and the Skip grace period** (default 2 minutes, server-wide, §3.6). Saved as a `settings` doc in the plugin DB. Per-user editor preferences (font size, wrap, tab vs spaces) go in localStorage. |
 
 ### 3.2 Device tab (this device only)
 
@@ -116,9 +116,9 @@ Single column, with sections as Bootstrap cards (not accordions) so everything i
 Sections marked *(admin)* are hidden from users (§3.5).
 
 1. **Header strip.** Online/offline badge, OS, and a note when offline: "Jobs will run when this device reconnects". *(admin)* **Open Script Library ↗** calls `parent.goPlugin('scripttask', 'ScriptTask')`.
-2. **Run a script.** Searchable script picker (folder path shown as muted text, with type badge). Pinned/favourite scripts appear first. Scripts whose type can't run on this device's OS are listed but disabled, with the reason. Actions: **Run now**, and *(admin)* **Schedule…** (inline form).
-3. **Queue.** Pending jobs for this device, soonest first. Users can cancel their own pending jobs. *(admin)* Cancel any job, plus **Cancel all pending**. *(admin)* This device's schedules, sorted by next run, with inline Edit / Pause / Delete. Users see scheduled runs read-only.
-4. **History.** This device's runs. Status badge (including *Missed*, §3.6), relative time (absolute on hover), duration, a one-line output preview, and click to open the Output viewer. **Run again** on any row the user is allowed to run.
+2. **Run a script.** Searchable script picker (folder path shown as muted text, with type badge). Pinned/favourite scripts appear first. Scripts whose type can't run on this device's OS are listed but disabled, with the reason. Actions: **Run now** and **Schedule…** (inline form).
+3. **Queue.** Pending jobs and schedules for this device, soonest first. Users can cancel their own pending jobs, and edit, pause or delete schedules they created. Other people's items are shown read-only. *(admin)* Act on any job or schedule, plus **Cancel all pending**.
+4. **History.** All of this device's runs, whoever started them. Status badge (including *Missed*, §3.6), relative time (absolute on hover), duration, a one-line output preview, and click to open the Output viewer. **Run again** on any row the user is allowed to run.
 5. *(admin)* **Variables (effective).** Every variable that applies to this device, showing which scope wins (global → script → group → device) and what was overridden. Device-scope variables can be edited here. Anything else links to the server page.
 
 ### 3.3 Shared components
@@ -147,7 +147,7 @@ Two roles, built on MeshCentral's plugin permissions framework (≥1.1.58, so gu
 | Permission | Grants | Default |
 |---|---|---|
 | `manage` | Server page: library editing, batch runs, all schedules, variables, settings. Admin controls on the device tab. | Denied. Full site admins (`siteadmin == 0xFFFFFFFF`) always pass. |
-| `run` | Device tab: run existing library scripts now, cancel own pending jobs, view the device's queue and history. | Allowed |
+| `run` | Device tab: run or schedule existing library scripts on that device. Cancel own pending jobs; edit, pause or delete own schedules. View the device's full queue, schedules and history, including output from runs other people started. | Allowed |
 
 On top of the plugin permission, every device-targeted action also requires the MeshCentral device right that its own "Run Commands" feature checks (`MESHRIGHT_REMOTECOMMAND`, 0x20000), using `GetNodeWithRights`. A user who can't run commands on a device in MeshCentral can't run scripts on it here. Batch runs check this per target and report the devices that were refused.
 
@@ -165,7 +165,7 @@ A scheduled job can only run when its device is online. Two settings per schedul
 |---|---|
 | **Run when it reconnects** | The job waits, however long. Several missed slots collapse into one run, so there's no backlog of catch-up runs. *This is today's behaviour.* |
 | **Run if it reconnects within…** | Takes a window (e.g. 2 hours). If the device comes online inside the window, the job runs. If not, the job is recorded as **Missed** and the schedule moves on to its next slot. |
-| **Skip** | Runs only if the device is online at the scheduled time. In practice this is a short window (one queue tick plus a small grace period, ~2 minutes), so it shares an implementation with the option above. Otherwise the job is recorded as **Missed**. |
+| **Skip** | Runs only if the device is online at the scheduled time. In practice this is a short window: the **Skip grace period**, a server-wide setting (default 2 minutes, not set per schedule) that covers the one-minute queue tick. It shares an implementation with the option above. Otherwise the job is recorded as **Missed**. |
 
 Missed runs appear in History and on the Overview, so silently skipped work is visible.
 
@@ -269,7 +269,7 @@ These stay in scope because the UI can't work without them.
 6. **Explicit job status.** Store `status` (`queued|dispatched|complete|error|cancelled`) alongside the timestamps. Today it's derived in the browser with an order-dependent rule. Add a one-time migration using the existing, unused `dbVersion`.
 7. **Settings document** (`type:'settings'`) read at startup and used by the queue timer, cleanup and history limits.
 8. **Dispatch on connect** via `hook_agentCoreIsStable`, so "Waiting for device" turns into "Dispatched" seconds after a device comes online.
-9. **Offline and late-run policies** (§3.6). Schedule fields `offlinePolicy` (`'wait'|'window'|'skip'`), `offlineWindow` (seconds) and `anchor` (`'slot'|'actual'`). Job field `expiresAt`. New job status `missed`. The queue tick expires jobs. `determineNextJobTime` is rewritten around local wall-clock dates, with unit tests, since it's the core of this behaviour. Existing schedules migrate to `wait` + `slot`, which is exactly today's behaviour.
+9. **Offline and late-run policies** (§3.6). Schedule fields `offlinePolicy` (`'wait'|'window'|'skip'`), `offlineWindow` (seconds) and `anchor` (`'slot'|'actual'`). Job field `expiresAt`. Settings field `skipGraceSeconds` (default 120). New job status `missed`. The queue tick expires jobs. `determineNextJobTime` is rewritten around local wall-clock dates, with unit tests, since it's the core of this behaviour. Existing schedules migrate to `wait` + `slot`, which is exactly today's behaviour.
 10. **Permissions** (§3.5). `registerPermissions` at startup. A `requireCaps(user, nodeId?)` helper used by every handler. Device rights resolved through `GetNodeWithRights`.
 11. **Indexes.** Add `type` and compound `{type, node}`, `{type, completeTime}`, `{type, scriptId}` on Mongo and NeDB. Every query filters on `type`, and none of the current indexes cover it.
 
@@ -340,7 +340,7 @@ Remaining:
 Each step can ship on its own and keeps the plugin working.
 
 1. **Foundation.** Theme sync, shared CSS, RPC + listener registry, vendored Preact/htm, routes. Permissions and server-side enforcement (§3.5). Fix the `config.json` URLs and set `meshCentralCompat: ">=1.2.0"`. *Visible result:* the existing device tab restyled and theme-aware, with admin-only controls hidden from users.
-2. **Device tab rebuild.** Script picker with Run now, admin Schedule form, editable queue (cancel), history + Output viewer, admin effective variables. Server: cancel/run-now/edit-schedule/pause, node-scoped queries.
+2. **Device tab rebuild.** Script picker with Run now and Schedule, editable queue (cancel), history + Output viewer, admin effective variables. Server: cancel/run-now/edit-schedule/pause, node-scoped queries.
 3. **Scheduling engine.** Offline and late-run policies (§3.6), the `missed` status, a wall-clock rewrite of `determineNextJobTime` with unit tests, migration of existing schedules, dispatch on connect.
 4. **Server page shell + Library + editor.** `hasAdminPanel: true`, CodeMirror bundle, tree, editor, script-scoped tabs.
 5. **Queue, Schedules, History (server-wide).** Paged queries, filters, bulk actions. Schedules sorted by next run.
@@ -350,5 +350,6 @@ Each step can ship on its own and keeps the plugin working.
 
 ## Open questions
 
-1. **What users can do on the device tab.** The plan gives users **Run now** only, plus cancelling their own pending jobs and viewing that device's history and output. Scheduling is admin-only. Should users also be able to schedule, or see output from runs other people started on that device?
-2. **"Skip" grace period.** Is ~2 minutes after the scheduled time right, or should Skip be configurable like the window?
+None outstanding. Answered so far:
+- Users can schedule runs on their devices and see every past run on them, including other people's. They can change only their own pending jobs and schedules.
+- Skip grace period defaults to 2 minutes and is a server-wide plugin setting.
