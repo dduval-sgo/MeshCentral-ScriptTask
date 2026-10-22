@@ -234,13 +234,16 @@ Shared modules in `includes/`:
 | | CodeMirror 6 | Monaco |
 |---|---|---|
 | Size | ~350KB bundle | ~4MB+, plus web workers |
-| Theming | CSS variables. Follows Bootswatch with no extra work | Its own theme API. Has to be mapped by hand on every switch |
+| Themes | Standard code themes available as MIT packages (`@uiw/codemirror-theme-*`, `@codemirror/theme-one-dark`) | Built-in VS themes; others need porting |
 | Languages | `@codemirror/legacy-modes`: shell, powershell. Batch: a ~40-line custom `StreamLanguage` | shell, powershell, bat built in |
 | Mobile / a11y | Good | Weak on mobile |
 | Diff view | `@codemirror/merge` | Built in |
 | Offline / air-gapped servers | Vendored file | Vendored, but heavy |
 
 Editor features for this pass:
+
+- **Editor themes are separate from the MeshCentral theme** (decided after step 1). The editor uses standard programming themes rather than copying the UI theme: Darcula, Solarized Light/Dark, Dracula, GitHub Light/Dark, Monokai, Nord, One Dark, Tokyo Night, VS Code Light/Dark and Eclipse. A theme picker in the editor's toolbar is saved per user. The default, **Auto**, uses a light theme (GitHub Light) in MeshCentral's light mode and a dark one (Darcula) in dark mode. The Output viewer uses the same theme.
+- **Line numbers** in a gutter, plus the active-line highlight.
 
 - Syntax highlighting per type (`ps1`, `bat`, `bash`). Type is auto-detected on upload (shebang, extension) and can be changed in the toolbar.
 - **Respects indentation.** Tab/Shift-Tab indent and outdent, auto-indent on Enter, and a configurable unit per type (defaults: PowerShell 4 spaces, Bash 2 spaces, Batch 4 spaces, or tabs). A status-bar indicator works like VS Code's ("Spaces: 4") and can be clicked to change. Existing files are detected from their content.
@@ -344,8 +347,8 @@ Each step can ship on its own and keeps the plugin working.
    - MeshCentral constructs plugins before `registerPermissions` exists, so permissions are registered in `server_startup`. With nothing registered, `checkPluginPermission` allows everything, so ScriptTask falls back to its own defaults in that case (manage denied).
    - Interim: library editing, multi-device runs and variables are on the device tab for managers until the server page (step 4) exists.
    - Tested on MeshCentral 1.3.0 with Playwright (default, Flatly, Darkly, Solar, Vapor; light and dark; live switching; admin, run-only and no-rights users) and with `test/server.test.js`. The Linux agent binary crashes in the cloud test VM, so agent round trips are covered by the server tests, not end to end.
-2. **Device tab rebuild.** Script picker with Run now and Schedule, editable queue (cancel), history + Output viewer, admin effective variables. Server: cancel/run-now/edit-schedule/pause, node-scoped queries.
-3. **Scheduling engine.** Offline and late-run policies (§3.6), the `missed` status, a wall-clock rewrite of `determineNextJobTime` with unit tests, migration of existing schedules, dispatch on connect.
+2. **Device tab rebuild.** Single-column layout. Searchable script picker with favourites, Run now and Schedule. Run again from history. Queue and history (cancel and the Output viewer shipped in step 1). Manager tools (library tree, variables) move into their own cards below until the server page exists.
+3. **Scheduling engine.** Offline and late-run policies (§3.6), the `missed` status, a wall-clock rewrite of `determineNextJobTime` with unit tests, migration of existing schedules, dispatch on connect. **Editing and pausing schedules** moved here from step 2: both need a correct "next run after now" calculation, and today's weekly logic can fire catch-up runs when a schedule's last slot is more than a week old.
 4. **Server page shell + Library + editor.** `hasAdminPanel: true`, CodeMirror bundle, tree, editor, script-scoped tabs.
 5. **Queue, Schedules, History (server-wide).** Paged queries, filters, bulk actions. Schedules sorted by next run.
 6. **Run/Batch + batch results.** Device picker, `batchId`, grouped results matrix.
