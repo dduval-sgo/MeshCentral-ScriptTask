@@ -25,6 +25,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - Edit and pause/resume schedules. Users can change schedules they created; managers can change any.
 - Settings for managers: the Skip grace period (default 2 minutes, server-wide) and defaults for new schedules.
 - Due runs start within seconds of a device connecting, instead of at the next minute's queue check.
+- ScriptTask page for managers (My Server > Plugins > ScriptTask, or Open ScriptTask on a device tab): the script library with a folder tree, and for each script an editor plus its schedules, history and variables across all devices. Plugin settings moved here.
+- Code editor (CodeMirror 6, bundled): line numbers, PowerShell, Bash and Batch highlighting, search and replace, Tab indenting, and #variables# highlighted, with their values on hover and unknown ones underlined. Line endings (CRLF or LF) are kept, or can be changed; Bash is always saved with LF.
+- Code themes chosen per user, independent of the MeshCentral theme: Darcula, Dracula, Eclipse, GitHub Light/Dark, Monokai, Nord, One Dark, Solarized Light/Dark, Tokyo Night and VS Code Light/Dark. Auto picks GitHub Light or Darcula to match light or dark mode. Script output is shown in the same read-only code view.
 - Server tests (`node --test test/*.test.js`).
 
 ### Fixed
@@ -38,6 +41,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ### Removed
 - tail.DateTime dependency.
+- Library editing on the device tab (it is on the ScriptTask page now). Managers keep multi-device runs and the variables that apply to the device.
 
 ## [0.0.20] - 2025-01-08
 ### Fixed

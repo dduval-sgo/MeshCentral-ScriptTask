@@ -4,7 +4,7 @@
   "version": "0.0.20",
   "author": "Ryan Blenis",
   "description": "Script (PowerShell, BAT, Bash) runner for endpoints",
-  "hasAdminPanel": false,
+  "hasAdminPanel": true,
   "homepage": "https://github.com/dduval-sgo/MeshCentral-ScriptTask",
   "changelogUrl": "https://raw.githubusercontent.com/dduval-sgo/MeshCentral-ScriptTask/master/changelog.md",
   "configUrl": "https://raw.githubusercontent.com/dduval-sgo/MeshCentral-ScriptTask/master/config.json",

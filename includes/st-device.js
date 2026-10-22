@@ -1,7 +1,7 @@
 /**
 * @description ScriptTask device tab: run and schedule library scripts on one device, and see its queue and history.
-* ScriptTask managers also get library editing, multi-device runs and variables here until the server page exists.
-* Requires st-core.js and st-dialogs.js.
+* ScriptTask managers also get multi-device runs, the variables that apply here, and links to the ScriptTask page.
+* Requires st-core.js, st-dialogs.js, st-editor.js and st-shared.js.
 * @license Apache-2.0
 */
 
@@ -12,20 +12,9 @@
     var useState = preactHooks.useState, useEffect = preactHooks.useEffect, useMemo = preactHooks.useMemo, useRef = preactHooks.useRef, useCallback = preactHooks.useCallback;
     var host = ST.host;
     var node = host ? host.currentNode : null;
+    var S = ST.shared, store = S.store, nodeName = S.nodeName, meshName = S.meshName;
 
     // ---- Small helpers ----
-
-    function store(key, value) {
-        try {
-            if (value === undefined) return JSON.parse(localStorage.getItem('scripttask.' + key));
-            localStorage.setItem('scripttask.' + key, JSON.stringify(value));
-        } catch (e) { return null; }
-    }
-    function nodeName(id) {
-        var n = (host && host.nodes) ? host.nodes.find(function (x) { return x._id == id; }) : null;
-        return n ? n.name : id.split('/').pop().substring(0, 8) + '…';
-    }
-    function meshName(id) { return (host && host.meshes && host.meshes[id]) ? host.meshes[id].name : 'Device group'; }
 
     // Windows, other, or unknown (null) for the current device
     function deviceIsWindows() {
@@ -43,115 +32,6 @@
         if (filetype == 'ps1' && !win) return { block: false, msg: 'Needs PowerShell (pwsh) installed on this device.' };
         return null;
     }
-    function detectType(fileName, content) {
-        var ext = fileName.split('.').pop().toLowerCase();
-        if (ext == 'ps1') return 'ps1';
-        if (ext == 'bat' || ext == 'cmd') return 'bat';
-        if (ext == 'sh' || ext == 'bash' || content.startsWith('#!')) return 'bash';
-        return null;
-    }
-
-    // Arrange the flat library list into folders
-    function buildTree(items) {
-        var folders = {}, roots = [], orphans = [];
-        items.forEach(function (i) { if (i.type == 'folder') folders[i.path] = { item: i, folders: [], scripts: [] }; });
-        Object.keys(folders).forEach(function (path) {
-            var parentPath = path.substring(0, path.lastIndexOf('/'));
-            if (parentPath && folders[parentPath]) folders[parentPath].folders.push(folders[path]); else roots.push(folders[path]);
-        });
-        items.forEach(function (i) { if (i.type == 'script') { if (folders[i.path]) folders[i.path].scripts.push(i); else orphans.push(i); } });
-        var byName = function (a, b) { return (a.item || a).name.localeCompare((b.item || b).name); };
-        Object.keys(folders).forEach(function (p) { folders[p].folders.sort(byName); folders[p].scripts.sort(byName); });
-        roots.sort(byName);
-        return { roots: roots, orphans: orphans.sort(byName) };
-    }
-
-    // ---- Library ----
-
-    function TreeFolder(props) {
-        var f = props.folder, item = f.item;
-        var collapsed = props.collapsed.indexOf(item.path) >= 0;
-        var over = useState(false);
-        var drop = props.manage ? {
-            onDragOver: function (e) { e.preventDefault(); e.stopPropagation(); over[1](true); },
-            onDragLeave: function () { over[1](false); },
-            onDrop: function (e) { e.preventDefault(); e.stopPropagation(); over[1](false); props.onDrop(e, item); }
-        } : {};
-        return html`<li>
-            <div class=${'st-tree-row' + (props.selId == item._id ? ' st-selected' : '') + (over[0] ? ' st-drop-target' : '')} draggable=${props.manage && item.path != 'Shared'}
-                onDragStart=${function (e) { e.dataTransfer.setData('application/x-scripttask-item', item._id); }}
-                onClick=${function () { props.onSelect(item); props.onToggle(item.path); }} ...${drop} title=${item.path}>
-                <span class="st-tree-chevron"><${ST.Icon} name=${collapsed ? 'chevron-right' : 'chevron-down'} /></span>
-                <${ST.Icon} name=${collapsed ? 'folder2' : 'folder2-open'} class="st-folder-icon" />
-                <span class="st-tree-name">${item.name}</span>
-            </div>
-            ${collapsed ? null : html`<ul>
-                ${f.folders.map(function (c) { return html`<${TreeFolder} key=${c.item._id} ...${props} folder=${c} />`; })}
-                ${f.scripts.map(function (s) { return html`<${TreeScript} key=${s._id} script=${s} selId=${props.selId} onSelect=${props.onSelect} manage=${props.manage} />`; })}
-            </ul>`}
-        </li>`;
-    }
-
-    function TreeScript(props) {
-        var s = props.script;
-        var compat = compatibility(s.filetype);
-        return html`<li>
-            <div class=${'st-tree-row' + (props.selId == s._id ? ' st-selected' : '')} draggable=${props.manage}
-                onDragStart=${function (e) { e.dataTransfer.setData('application/x-scripttask-item', s._id); }}
-                onClick=${function () { props.onSelect(s); }} title=${compat ? compat.msg : s.name}>
-                <span class="st-tree-chevron"></span>
-                <${ST.Icon} name="file-earmark-code" class=${compat && compat.block ? 'text-body-tertiary' : 'text-body-secondary'} />
-                <span class=${'st-tree-name' + (compat && compat.block ? ' text-body-tertiary' : '')}>${s.name}${props.showPath ? html` <span class="st-script-path">${s.path}</span>` : null}</span>
-                <span class="st-type">${s.filetype}</span>
-            </div>
-        </li>`;
-    }
-
-    function Library(props) {
-        var q = useState('');
-        var dropping = useState(false);
-        var fileInput = useRef(null);
-        var tree = useMemo(function () { return buildTree(props.items); }, [props.items]);
-        var matches = q[0] ? props.items.filter(function (i) { return i.type == 'script' && i.name.toLowerCase().indexOf(q[0].toLowerCase()) >= 0; }) : null;
-
-        var onDrop = function (e, folder) {
-            dropping[1](false);
-            var moveId = e.dataTransfer.getData('application/x-scripttask-item');
-            if (moveId && folder) { if (moveId != folder._id) props.actions.move(moveId, folder._id); return; }
-            if (e.dataTransfer.files && e.dataTransfer.files.length) props.actions.upload(e.dataTransfer.files, folder ? folder._id : null);
-        };
-        var cardDrop = props.manage ? {
-            onDragOver: function (e) { if (Array.from(e.dataTransfer.types).indexOf('Files') >= 0) { e.preventDefault(); dropping[1](true); } },
-            onDragLeave: function (e) { if (e.currentTarget.contains(e.relatedTarget)) return; dropping[1](false); },
-            onDrop: function (e) { e.preventDefault(); onDrop(e, null); }
-        } : {};
-
-        return html`<div class="card st-card" ...${cardDrop}>
-            <div class="card-header">
-                Script library
-                ${props.manage ? html`<div class="st-actions">
-                    <button class="btn btn-sm st-btn-quiet" title="New script" aria-label="New script" onClick=${props.actions.newScript}><${ST.Icon} name="file-earmark-plus" /></button>
-                    <button class="btn btn-sm st-btn-quiet" title="New folder" aria-label="New folder" onClick=${props.actions.newFolder}><${ST.Icon} name="folder-plus" /></button>
-                    <button class="btn btn-sm st-btn-quiet" title="Upload scripts (.ps1, .bat, .sh)" aria-label="Upload scripts" onClick=${function () { fileInput.current.click(); }}><${ST.Icon} name="upload" /></button>
-                    <input type="file" class="d-none" multiple accept=".ps1,.bat,.cmd,.sh,.bash" ref=${fileInput} onChange=${function (e) { props.actions.upload(e.target.files, props.selId); e.target.value = ''; }} />
-                </div>` : null}
-            </div>
-            <div class="card-body">
-                ${dropping[0] ? html`<div class="st-drop-hint"><${ST.Icon} name="upload" class="me-1" />Drop scripts to add them to the library</div>` : null}
-                <input type="search" class="form-control form-control-sm mb-2" placeholder="Search scripts" aria-label="Search scripts" value=${q[0]} onInput=${function (e) { q[1](e.target.value); }} />
-                ${props.items.length == 0 ? html`<${ST.Spinner} />` : matches ? (
-                    matches.length == 0 ? html`<${ST.Empty}>No scripts match.</${ST.Empty}>` :
-                    html`<ul class="st-tree">${matches.map(function (s) { return html`<${TreeScript} key=${s._id} script=${s} selId=${props.selId} onSelect=${props.onSelect} showPath=${true} />`; })}</ul>`
-                ) : html`<ul class="st-tree">
-                    ${tree.roots.map(function (f) { return html`<${TreeFolder} key=${f.item._id} folder=${f} selId=${props.selId} onSelect=${props.onSelect} collapsed=${props.collapsed} onToggle=${props.onToggle} manage=${props.manage} onDrop=${onDrop} />`; })}
-                    ${tree.orphans.map(function (s) { return html`<${TreeScript} key=${s._id} script=${s} selId=${props.selId} onSelect=${props.onSelect} manage=${props.manage} />`; })}
-                </ul>`}
-                ${props.manage && props.items.length <= 1 ? html`<div class="form-text mt-2">Drop .ps1, .bat or .sh files here to add them.</div>` : null}
-                ${props.footer ? html`<hr class="my-2" />${props.footer}` : null}
-            </div>
-        </div>`;
-    }
-
     // ---- Script picker ----
 
     // Searchable list of library scripts. Favourites first, then by folder. Scripts that can't run on this device are shown but can't be chosen.
@@ -256,32 +136,9 @@
                             <button class="btn st-btn-quiet" disabled=${blocked} onClick=${function () { a.schedule(item); }}><${ST.Icon} name="calendar-plus" class="me-1" />Schedule…</button>` : null}
                         ${props.manage ? html`
                             <button class="btn st-btn-quiet" onClick=${function () { a.runMany(item); }}><${ST.Icon} name="send" class="me-1" />Run on several devices…</button>
-                            <button class="btn st-btn-quiet ms-auto" onClick=${function () { a.edit(item); }}><${ST.Icon} name="pencil" class="me-1" />Edit script</button>` : null}
+                            <button class="btn st-btn-quiet ms-auto" onClick=${function () { a.openLibrary(item._id); }}><${ST.Icon} name="pencil" class="me-1" />Edit in library<${ST.Icon} name="box-arrow-up-right" class="ms-1 small" /></button>` : null}
                     </div>
                 </div>`}
-            </div>
-        </div>`;
-    }
-
-    // ---- Library management (managers, until the server page exists) ----
-
-    function LibraryItemActions(props) {
-        var item = props.item, a = props.actions;
-        if (item == null) return html`<div class="form-text">Select a script or folder to rename, download or delete it. Drag items onto folders to move them.</div>`;
-        var isRoot = item.type == 'folder' && item.path == 'Shared';
-        return html`<div class="st-lib-actions">
-            <div class="st-script-head">
-                <${ST.Icon} name=${item.type == 'folder' ? 'folder2-open' : 'file-earmark-code'} class=${item.type == 'folder' ? 'st-folder-icon' : 'text-body-secondary'} />
-                <span class="fw-semibold">${item.name}</span>
-                <span class="st-script-path">${item.path}</span>
-            </div>
-            <div class="st-run-actions mt-2">
-                ${item.type == 'script' ? html`
-                    <button class="btn btn-sm st-btn-quiet" onClick=${function () { a.edit(item); }}><${ST.Icon} name="pencil" class="me-1" />Edit</button>
-                    <button class="btn btn-sm st-btn-quiet" onClick=${function () { a.download(item); }}><${ST.Icon} name="download" class="me-1" />Download</button>` : null}
-                ${!isRoot ? html`
-                    <button class="btn btn-sm st-btn-quiet" onClick=${function () { a.rename(item); }}>Rename</button>
-                    <button class="btn btn-sm btn-outline-danger" onClick=${function () { a.remove(item); }}><${ST.Icon} name="trash3" class="me-1" />Delete</button>` : html`<span class="form-text">The top-level folder can't be renamed or deleted.</span>`}
             </div>
         </div>`;
     }
@@ -291,13 +148,7 @@
     function QueueCard(props) {
         var d = props.data, a = props.actions, user = props.user;
         var canChange = function (ownerId) { return props.manage || (ownerId != null && ownerId == user.id); };
-        // Soonest first; paused and finished schedules last
-        var schedules = d.schedules.slice().sort(function (x, y) { return ((x.paused === true) - (y.paused === true)) || ((x.nextRun == null) - (y.nextRun == null)) || ((x.nextRun || 0) - (y.nextRun || 0)); });
-        var qLimit = useState(10), sLimit = useState(10);
-        var more = function (total, limit) {
-            if (total <= limit[0]) return null;
-            return html`<button class="btn btn-sm btn-link" onClick=${function () { limit[1](limit[0] + 25); }}>Show more (${total - limit[0]} more)</button>`;
-        };
+        var qLimit = useState(10);
         return html`<div class="card st-card">
             <div class="card-header">
                 <${ST.Icon} name="list-task" />Queue
@@ -316,55 +167,16 @@
                         <td>${j.runBy}${j.jobSchedule ? html` <span class="text-body-secondary small">(schedule)</span>` : null}</td>
                         <td class="st-col-actions">${canChange(j.runById) ? html`<button class="btn btn-sm btn-outline-danger" title="Cancel this run" onClick=${function () { a.cancelJob(j); }}><${ST.Icon} name="x-lg" /><span class="visually-hidden">Cancel</span></button>` : null}</td>
                     </tr>`; })}</tbody>
-                </table>${more(d.queue.length, qLimit)}</div>`}
+                </table><${S.ShowMore} total=${d.queue.length} limit=${qLimit} /></div>`}
                 <div class="st-section-title">Schedules</div>
-                ${schedules.length == 0 ? html`<${ST.Empty}>No schedules for this device.</${ST.Empty}>` : html`
-                <div class="table-responsive"><table class="table table-sm st-table">
-                    <thead><tr><th>Script</th><th>Repeat</th><th>Next run</th><th>Last run</th><th>Created by</th><th class="st-col-actions"><span class="visually-hidden">Actions</span></th></tr></thead>
-                    <tbody>${schedules.slice(0, sLimit[0]).map(function (s) { return html`<tr key=${s._id}>
-                        <td>${props.scriptName(s.scriptId)}</td>
-                        <td>${ST.fmt.recurrence(s)}${ST.fmt.zoneNote(s) ? ' (' + ST.fmt.zoneNote(s) + ')' : ''}
-                            <div class="text-body-secondary small">${ST.fmt.policy(s)}${s.endAt ? ', until ' + ST.fmt.time(s.endAt) : ''}</div></td>
-                        <td>${s.paused ? html`<${ST.StatusBadge} status="paused" />` : html`<${ST.Time} t=${s.nextRun} empty="Not scheduled" />`}</td>
-                        <td><${ST.Time} t=${s.lastRun} empty="Never" /></td>
-                        <td>${s.scheduledBy}</td>
-                        <td class="st-col-actions">${canChange(s.scheduledById) ? html`<div class="btn-group btn-group-sm" role="group" aria-label="Schedule actions">
-                            <button class="btn st-btn-quiet" title="Edit this schedule" onClick=${function () { a.editSchedule(s); }}><${ST.Icon} name="pencil" /><span class="visually-hidden">Edit</span></button>
-                            <button class="btn st-btn-quiet" title=${s.paused ? 'Resume this schedule' : 'Pause this schedule'} onClick=${function () { a.pauseSchedule(s, !s.paused); }}><${ST.Icon} name=${s.paused ? 'play-fill' : 'pause-fill'} /><span class="visually-hidden">${s.paused ? 'Resume' : 'Pause'}</span></button>
-                            <button class="btn btn-outline-danger" title="Delete this schedule" onClick=${function () { a.deleteSchedule(s); }}><${ST.Icon} name="trash3" /><span class="visually-hidden">Delete</span></button>
-                        </div>` : null}</td>
-                    </tr>`; })}</tbody>
-                </table>${more(schedules.length, sLimit)}</div>`}
+                <${S.ScheduleTable} schedules=${d.schedules} scriptName=${props.scriptName} canChange=${function (sc) { return canChange(sc.scheduledById); }} actions=${a} empty="No schedules for this device." />
             </div>
-        </div>`;
-    }
-
-    // ---- History ----
-
-    function HistoryTable(props) {
-        var limit = useState(25);
-        var rows = props.jobs.slice(0, limit[0]);
-        if (props.jobs.length == 0) return html`<${ST.Empty} icon="clock-history">${props.empty}</${ST.Empty}>`;
-        return html`<div class="table-responsive"><table class="table table-sm table-hover st-table">
-                <thead><tr><th>Finished</th>${props.showDevice ? html`<th>Device</th>` : html`<th>Script</th>`}<th>Status</th><th>Took</th><th>Run by</th><th>Output</th>${props.onRunAgain ? html`<th class="st-col-actions"><span class="visually-hidden">Actions</span></th>` : null}</tr></thead>
-                <tbody>${rows.map(function (j) { var out = ST.jobOutput(j); return html`<tr key=${j._id} class="st-clickable" tabindex="0" onClick=${function () { props.onOpen(j); }} onKeyDown=${function (e) { if (e.key == 'Enter') props.onOpen(j); }}>
-                    <td class="text-nowrap"><${ST.Time} t=${j.completeTime || j.queueTime} /></td>
-                    <td class="text-nowrap">${props.showDevice ? nodeName(j.node) : j.scriptName}</td>
-                    <td><${ST.StatusBadge} status=${ST.jobStatus(j, true)} /></td>
-                    <td class="text-nowrap">${(j.completeTime && j.dispatchTime) ? ST.fmt.duration(j.completeTime - j.dispatchTime) : ''}</td>
-                    <td>${j.runBy}</td>
-                    <td><div class="st-output-preview">${out ? out.split('\n')[0] : html`<span class="text-body-tertiary">No output</span>`}</div></td>
-                    ${props.onRunAgain ? html`<td class="st-col-actions">${props.canRunAgain(j) ? html`<button class="btn btn-sm st-btn-quiet" title=${'Run ' + j.scriptName + ' again'} onClick=${function (e) { e.stopPropagation(); props.onRunAgain(j); }}><${ST.Icon} name="arrow-repeat" class="me-1" />Run again</button>` : null}</td>` : null}
-                </tr>`; })}</tbody>
-            </table>
-            ${props.jobs.length > rows.length ? html`<button class="btn btn-sm btn-link" onClick=${function () { limit[1](limit[0] + 50); }}>Show more (${props.jobs.length - rows.length} older)</button>` : null}
         </div>`;
     }
 
     // ---- Variables (managers) ----
 
-    var SCOPE_ORDER = { global: 0, script: 1, mesh: 2, node: 3 };
-    var SCOPE_LABEL = { global: 'Global', script: 'Script', mesh: 'Device group', node: 'Device' };
+    var SCOPE_ORDER = S.SCOPE_ORDER, SCOPE_LABEL = S.SCOPE_LABEL;
 
     function VariablesCard(props) {
         var a = props.actions;
@@ -400,33 +212,14 @@
         </div>`;
     }
 
-    function NewScriptDialog(props) {
-        var s = useState({ name: '', filetype: deviceIsWindows() === false ? 'bash' : 'ps1' }), f = s[0], setF = s[1];
-        var submit = function (e) { e.preventDefault(); if (f.name.trim()) props.onSubmit(f); };
-        return html`<${ST.Modal} title="New script" onClose=${props.onClose} footer=${html`
-            <button type="button" class="btn btn-secondary" onClick=${props.onClose}>Cancel</button>
-            <button type="submit" form="st-new-script" class="btn btn-primary" disabled=${!f.name.trim()}>Create and edit</button>`}>
-            <form id="st-new-script" onSubmit=${submit}>
-                <div class="mb-3"><label class="form-label" for="st-ns-name">Name</label><input id="st-ns-name" class="form-control" autofocus value=${f.name} onInput=${function (e) { setF(Object.assign({}, f, { name: e.target.value })); }} /></div>
-                <label class="form-label" for="st-ns-type">Type</label>
-                <select id="st-ns-type" class="form-select" value=${f.filetype} onChange=${function (e) { setF(Object.assign({}, f, { filetype: e.target.value })); }}>
-                    <option value="ps1">PowerShell</option><option value="bat">Batch</option><option value="bash">Bash</option>
-                </select>
-                ${props.folder ? html`<div class="form-text">In ${props.folder}</div>` : null}
-            </form>
-        </${ST.Modal}>`;
-    }
-
     // ---- App ----
 
     function App() {
-        var st = useState({ init: null, error: null, items: [], data: null, vars: null, scriptData: null });
+        var st = useState({ init: null, error: null, items: [], data: null, vars: null });
         var state = st[0], setState = st[1];
         var patch = useCallback(function (p) { setState(function (o) { return Object.assign({}, o, p); }); }, []);
-        var sel = useState(store('libSelected')), selId = sel[0]; // Library tree selection (script or folder)
         var run = useState(store('runScript')), runId = run[0]; // Script chosen to run
         var fav = useState([]), favourites = fav[0];
-        var col = useState(store('collapsed') || []), collapsed = col[0];
         var dlg = useState(null), dialog = dlg[0], setDialog = dlg[1];
         var caps = state.init ? state.init.caps : null;
         var manage = caps != null && caps.manage;
@@ -434,7 +227,6 @@
         var loadTree = function () { return ST.rpc('tree').then(function (items) { patch({ items: items }); }); };
         var loadNode = function () { return ST.rpc('nodeData', { nodeId: node._id }).then(function (d) { patch({ data: d }); }); };
         var loadVars = function () { return ST.rpc('variables').then(function (v) { patch({ vars: v }); }); };
-        var loadScriptData = function (id) { return ST.rpc('scriptData', { scriptId: id }).then(function (d) { patch({ scriptData: d }); }, function () { patch({ scriptData: null }); }); };
 
         useEffect(function () {
             if (node == null) { patch({ error: 'Open this tab from a device page in MeshCentral.' }); return; }
@@ -448,11 +240,7 @@
             }).catch(function (e) { patch({ error: e.message }); });
         }, []);
 
-        var selected = state.items.find(function (i) { return i._id == selId; }) || null;
         var runItem = state.items.find(function (i) { return i._id == runId && i.type == 'script'; }) || null;
-        useEffect(function () {
-            if (manage && runItem) loadScriptData(runItem._id); else patch({ scriptData: null });
-        }, [manage, runItem ? runItem._id : null]);
 
         // Re-query whatever a change notice says is out of date (debounced, as notices can come in bursts)
         var latest = useRef({});
@@ -465,34 +253,32 @@
                 if (due.library) loadTree().catch(function () { });
                 if (due.node && c.run) loadNode().catch(function () { });
                 if (due.vars && c.manage) loadVars().catch(function () { });
-                if (due.script && c.manage && latest.current.runId) loadScriptData(latest.current.runId);
+                if (due.settings) ST.rpc('init', { nodeId: node._id }).then(function (fresh) { setState(function (o) { return Object.assign({}, o, { init: Object.assign({}, o.init, { settings: fresh.settings }) }); }); }, function () { });
                 due = {};
             };
             return ST.onInvalidate(function (m) {
                 if (m.library) due.library = true;
                 if (m.variables) due.vars = true;
+                if (m.settings) due.settings = true;
                 if (m.nodeIds && m.nodeIds.indexOf(node._id) >= 0) due.node = true;
-                if (m.scriptIds && m.scriptIds.indexOf(latest.current.runId) >= 0) due.script = true;
                 if (timer == null) timer = setTimeout(flush, 250);
             });
         }, []);
 
         var choose = function (id) { run[1](id); store('runScript', id); };
-        // Selecting a script in the library also makes it the script to run
-        var select = function (item) { sel[1](item._id); store('libSelected', item._id); if (item.type == 'script') choose(item._id); };
         var toggleFav = function (id) {
             var next = (favourites.indexOf(id) >= 0) ? favourites.filter(function (x) { return x != id; }) : favourites.concat([id]);
             fav[1](next); store('favourites.' + state.init.user.id, next);
         };
-        var toggleFolder = function (path) {
-            var next = (collapsed.indexOf(path) >= 0) ? collapsed.filter(function (p) { return p != path; }) : collapsed.concat([path]);
-            col[1](next); store('collapsed', next);
-        };
         var scriptName = function (id) { var s = state.items.find(function (i) { return i._id == id; }); return s ? s.name : '(deleted script)'; };
         var close = function () { setDialog(null); };
-        var folderOf = function (item) { if (item == null) return 'Shared'; return item.path; };
 
-        var actions = {
+        var actions = Object.assign(S.scheduleActions({ setDialog: setDialog, close: close, settings: function () { return state.init.settings; }, deviceName: function () { return node.name; }, scriptName: scriptName }), {
+            // Open the ScriptTask page (My Server > Plugins) at a script, or at the library
+            openLibrary: function (scriptId) {
+                store('openRoute', scriptId ? '#/library/' + scriptId : '#/library');
+                if (typeof host.goPlugin == 'function') host.goPlugin('scripttask', 'ScriptTask');
+            },
             runNow: function (item) {
                 ST.ui.attempt(ST.rpc('runScript', { scriptId: item._id, nodeIds: [node._id] })).then(function (r) {
                     if (r == null) return;
@@ -529,64 +315,8 @@
                 ST.ui.confirm({ title: 'Cancel all pending runs?', body: html`<p class="mb-0">All ${state.data.queue.length} pending runs on ${node.name} will be cancelled. Schedules stay, and create their next run as usual.</p>`, confirmText: 'Cancel all', danger: true })
                 .then(function (ok) { if (ok) ST.ui.attempt(ST.rpc('cancelAllPending', { nodeId: node._id }), 'Pending runs cancelled.'); });
             },
-            editSchedule: function (s) {
-                setDialog(html`<${ST.dialogs.Schedule} title=${'Edit schedule: ' + scriptName(s.scriptId)} subtitle=${'On ' + node.name + '. Saving restarts the schedule from now; its pending run is replaced.'} schedule=${s} settings=${state.init.settings} onClose=${close} onSubmit=${function (sc) {
-                    return ST.rpc('updateSchedule', { scheduleId: s._id, schedule: sc }).then(function () { close(); ST.ui.toast('Schedule saved.'); });
-                }} />`);
-            },
-            pauseSchedule: function (s, paused) {
-                ST.ui.attempt(ST.rpc('pauseSchedule', { scheduleId: s._id, paused: paused }), paused ? 'Schedule paused. Its pending run was removed.' : 'Schedule resumed from its next run.');
-            },
-            openSettings: function () {
-                ST.rpc('init', { nodeId: node._id }).then(function (fresh) {
-                    setDialog(html`<${ST.dialogs.Settings} settings=${fresh.settings} onClose=${close} onSaved=${function (saved) { patch({ init: Object.assign({}, state.init, { settings: saved }) }); close(); }} />`);
-                }, function (e) { ST.ui.toast(e.message, 'error'); });
-            },
-            deleteSchedule: function (s) {
-                ST.ui.confirm({ title: 'Delete this schedule?', body: html`<p class="mb-0">${scriptName(s.scriptId)} (${ST.fmt.recurrence(s).toLowerCase()}) will stop running on ${node.name}. Its pending run is cancelled too.</p>`, confirmText: 'Delete schedule', danger: true })
-                .then(function (ok) { if (ok) ST.ui.attempt(ST.rpc('deleteSchedule', { scheduleId: s._id }), 'Schedule deleted.'); });
-            },
             openOutput: function (j, showDevice) {
                 setDialog(html`<${ST.dialogs.Output} job=${j} scriptName=${j.scriptName} deviceName=${showDevice ? nodeName(j.node) : null} onClose=${close} />`);
-            },
-            // Library (managers)
-            newScript: function () {
-                setDialog(html`<${NewScriptDialog} folder=${folderOf(selected)} onClose=${close} onSubmit=${function (f) {
-                    ST.ui.attempt(ST.rpc('addScript', { name: f.name, filetype: f.filetype, content: '', folderId: selected ? selected._id : null })).then(function (r) {
-                        if (r == null) return;
-                        sel[1](r.id); store('libSelected', r.id); choose(r.id);
-                        setDialog(html`<${ST.dialogs.Editor} scriptId=${r.id} onClose=${close} />`);
-                    });
-                }} />`);
-            },
-            newFolder: function () {
-                ST.ui.prompt({ title: 'New folder', label: 'Folder name (in ' + folderOf(selected) + ')', confirmText: 'Create' }).then(function (name) {
-                    if (name) ST.ui.attempt(ST.rpc('newFolder', { name: name, parentId: selected ? selected._id : null }), 'Folder created.');
-                });
-            },
-            upload: function (files, folderId) {
-                Array.from(files).forEach(function (file) {
-                    file.text().then(function (content) {
-                        var type = detectType(file.name, content);
-                        if (type == null) { ST.ui.toast(file.name + ' wasn\'t added. Only .ps1, .bat and Bash scripts are supported.', 'error'); return; }
-                        ST.ui.attempt(ST.rpc('addScript', { name: file.name, content: content, filetype: type, folderId: folderId }), file.name + ' added.');
-                    });
-                });
-            },
-            move: function (id, folderId) { ST.ui.attempt(ST.rpc('move', { id: id, toId: folderId })); },
-            edit: function (item) { setDialog(html`<${ST.dialogs.Editor} scriptId=${item._id} onClose=${close} />`); },
-            rename: function (item) {
-                ST.ui.prompt({ title: 'Rename', label: 'New name', value: item.name, confirmText: 'Rename' }).then(function (name) {
-                    if (name && name != item.name) ST.ui.attempt(ST.rpc('rename', { id: item._id, name: name }));
-                });
-            },
-            download: function (item) { window.location = '/pluginadmin.ashx?pin=scripttask&user=1&dl=' + encodeURIComponent(item._id); },
-            remove: function (item) {
-                var body = (item.type == 'folder')
-                    ? html`<p class="mb-0">${item.name} and everything in it will be deleted, along with the schedules for those scripts.</p>`
-                    : html`<p class="mb-0">${item.name} will be deleted from the library, along with its schedules on every device. Past runs stay in history.</p>`;
-                ST.ui.confirm({ title: 'Delete ' + item.name + '?', body: body, confirmText: 'Delete', danger: true })
-                .then(function (ok) { if (ok) ST.ui.attempt(ST.rpc('deleteItem', { id: item._id }), item.name + ' deleted.'); });
             },
             // Variables (managers)
             editVar: function (v) {
@@ -602,7 +332,7 @@
                 ST.ui.confirm({ title: 'Delete #' + v.name + '#?', body: html`<p class="mb-0">Scripts that use it will get the next most specific value, or VAR_NOT_FOUND.</p>`, confirmText: 'Delete', danger: true })
                 .then(function (ok) { if (ok) ST.ui.attempt(ST.rpc('deleteVar', { id: v._id }), 'Variable deleted.'); });
             }
-        };
+        });
 
         useEffect(function () { if (state.init || state.error) document.body.classList.remove('st-loading'); }, [state.init, state.error]);
 
@@ -629,35 +359,14 @@
                 <${QueueCard} data=${d} manage=${manage} user=${state.init.user} actions=${actions} scriptName=${scriptName} />
                 <div class="card st-card">
                     <div class="card-header"><${ST.Icon} name="clock-history" />History</div>
-                    <div class="card-body"><${HistoryTable} jobs=${d.history} empty="No runs on this device yet." onOpen=${function (j) { actions.openOutput(j, false); }}
+                    <div class="card-body"><${S.HistoryTable} jobs=${d.history} empty="No runs on this device yet." onOpen=${function (j) { actions.openOutput(j, false); }}
                         canRunAgain=${function (j) { var sc = state.items.find(function (i) { return i._id == j.scriptId; }); var c = sc ? compatibility(sc.filetype) : null; return sc != null && !(c && c.block); }}
                         onRunAgain=${function (j) { var sc = state.items.find(function (i) { return i._id == j.scriptId; }); if (sc) actions.runNow(sc); }} /></div>
                 </div>`) : null}
             ${manage ? html`
-                <div class="st-group-title d-flex align-items-center gap-2"><span><${ST.Icon} name="lock" class="me-1" />Manager tools<span class="fw-normal"> · only ScriptTask managers see these. They move to the ScriptTask server page in a later release.</span></span>
-                    <button class="btn btn-sm st-btn-quiet ms-auto" onClick=${actions.openSettings}><${ST.Icon} name="gear" class="me-1" />Settings</button></div>
-                <div class="row g-3">
-                    <div class="col-xl-5">
-                        <${Library} items=${state.items} selId=${selId} onSelect=${select} collapsed=${collapsed} onToggle=${toggleFolder} manage=${manage} actions=${actions}
-                            footer=${html`<${LibraryItemActions} item=${selected} actions=${actions} />`} />
-                    </div>
-                    <div class="col-xl-7">
-                        ${runItem ? html`<div class="card st-card">
-                            <div class="card-header"><${ST.Icon} name="send" />${runItem.name} on all devices</div>
-                            <div class="card-body">
-                                ${state.scriptData == null ? html`<${ST.Spinner} />` : html`
-                                    <div class="st-section-title">Schedules</div>
-                                    ${state.scriptData.schedules.length == 0 ? html`<${ST.Empty}>Not scheduled anywhere.</${ST.Empty}>` : html`<div class="table-responsive"><table class="table table-sm st-table">
-                                        <thead><tr><th>Device</th><th>Repeat</th><th>Next run</th><th>Created by</th></tr></thead>
-                                        <tbody>${state.scriptData.schedules.slice().sort(function (x, y) { return ((x.nextRun == null) - (y.nextRun == null)) || ((x.nextRun || 0) - (y.nextRun || 0)); }).map(function (s) { return html`<tr key=${s._id}><td>${nodeName(s.node)}</td><td>${ST.fmt.recurrence(s)}</td><td><${ST.Time} t=${s.nextRun} empty="Not scheduled" /></td><td>${s.scheduledBy}</td></tr>`; })}</tbody>
-                                    </table></div>`}
-                                    <div class="st-section-title">History</div>
-                                    <${HistoryTable} jobs=${state.scriptData.history.filter(function (j) { return j.completeTime != null; })} showDevice=${true} empty="This script hasn't run anywhere yet." onOpen=${function (j) { actions.openOutput(j, true); }} />`}
-                            </div>
-                        </div>` : null}
-                        <${VariablesCard} vars=${state.vars} script=${runItem} actions=${actions} />
-                    </div>
-                </div>` : null}
+                <div class="st-group-title d-flex align-items-center gap-2"><span><${ST.Icon} name="lock" class="me-1" />Manager tools<span class="fw-normal"> · only ScriptTask managers see these</span></span>
+                    <button class="btn btn-sm st-btn-quiet ms-auto" onClick=${function () { actions.openLibrary(null); }}><${ST.Icon} name="folder2-open" class="me-1" />Open ScriptTask<${ST.Icon} name="box-arrow-up-right" class="ms-1 small" /></button></div>
+                <${VariablesCard} vars=${state.vars} script=${runItem} actions=${actions} />` : null}
             ${dialog}
         </div>`;
     }

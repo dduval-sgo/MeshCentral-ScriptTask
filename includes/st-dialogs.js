@@ -1,6 +1,6 @@
 /**
-* @description ScriptTask dialogs shared by plugin pages: schedule, output viewer, script editor, variable, device picker.
-* Requires st-core.js.
+* @description ScriptTask dialogs shared by plugin pages: schedule, output viewer, variable, device picker, and the settings form.
+* Requires st-core.js and st-editor.js.
 * @license Apache-2.0
 */
 
@@ -170,8 +170,8 @@
 
     // ---- Settings (managers) ----
 
-    // props: settings, onSaved(settings), onClose
-    ST.dialogs.Settings = function (props) {
+    // props: settings, onSaved(settings)
+    ST.SettingsForm = function (props) {
         var st = props.settings;
         var w = splitSpan(st.defaultOfflineWindow);
         var s = useState({ grace: Math.round(st.skipGraceSeconds / 60), offline: st.defaultOfflinePolicy, windowN: w[0], windowUnit: w[1], anchor: st.defaultAnchor });
@@ -184,10 +184,7 @@
             ST.rpc('saveSettings', { skipGraceSeconds: Math.round(Number(f.grace) * 60), defaultOfflinePolicy: f.offline, defaultOfflineWindow: Math.round(Number(f.windowN) * f.windowUnit), defaultAnchor: f.anchor })
             .then(function (saved) { busy[1](false); ST.ui.toast('Settings saved.'); props.onSaved(saved); }, function (ex) { busy[1](false); err[1](ex.message); });
         };
-        return html`<${ST.Modal} title="ScriptTask settings" onClose=${props.onClose} footer=${html`
-            <button type="button" class="btn btn-secondary" onClick=${props.onClose}>Cancel</button>
-            <button type="submit" form="st-settings" class="btn btn-primary" disabled=${busy[0]}>Save</button>`}>
-            <form id="st-settings" onSubmit=${submit}>
+        return html`<form id="st-settings" class="st-settings" onSubmit=${submit}>
                 <div class="mb-3">
                     <label class="form-label" for="st-grace">Skip grace period</label>
                     <div class="input-group w-auto"><input type="number" min="1" max="60" step="1" class="form-control" id="st-grace" value=${f.grace} onInput=${function (e) { set('grace', e.target.value); }} /><span class="input-group-text">minutes</span></div>
@@ -213,8 +210,8 @@
                     </div>
                 </div>
                 ${err[0] ? html`<div class="alert alert-danger py-2 mt-3 mb-0">${err[0]}</div>` : null}
-            </form>
-        </${ST.Modal}>`;
+                <div class="mt-3"><button type="submit" class="btn btn-primary" disabled=${busy[0]}>${busy[0] ? html`<${ST.Spinner} class="me-1" />` : null}Save settings</button></div>
+            </form>`;
     };
 
     // ---- Output viewer ----
@@ -249,77 +246,14 @@
                 ${j.dispatchTime ? html`<dt>Sent to device</dt><dd>${ST.fmt.time(j.dispatchTime)}</dd>` : null}
                 ${j.completeTime ? html`<dt>Finished</dt><dd>${ST.fmt.time(j.completeTime)}${j.dispatchTime ? ' (took ' + ST.fmt.duration(j.completeTime - j.dispatchTime) + ')' : ''}</dd>` : null}
             </dl>
-            <div class="d-flex gap-3 mb-2 small">
+            <div class="d-flex gap-3 mb-2 small align-items-center flex-wrap">
                 ${parsed != null ? html`<div class="form-check form-switch mb-0"><input class="form-check-input" type="checkbox" id="st-out-fmt" checked=${fmt[0]} onChange=${function (e) { fmt[1](e.target.checked); }} /><label class="form-check-label" for="st-out-fmt">Format JSON</label></div>` : null}
                 <div class="form-check form-switch mb-0"><input class="form-check-input" type="checkbox" id="st-out-wrap" checked=${wrap[0]} onChange=${function (e) { wrap[1](e.target.checked); }} /><label class="form-check-label" for="st-out-wrap">Wrap lines</label></div>
+                ${text ? html`<span class="ms-auto"><${ST.EditorThemePicker} /></span>` : null}
             </div>
-            ${text ? html`<pre class=${'st-output' + (wrap[0] ? '' : ' st-nowrap')}>${text}</pre>` : html`<${ST.Empty}>No output.</${ST.Empty}>`}
+            ${text ? html`<div class="st-output-frame"><${ST.CodeEditor} key=${fmt[0] && parsed != null ? 'json' : 'raw'} value=${text} readOnly=${true} wrap=${wrap[0]} /></div>`
+                : html`<${ST.Empty}>${status == 'missed' ? 'This run didn\'t happen: the device was offline for longer than its schedule allows.' : status == 'cancelled' ? 'This run was cancelled before it produced any output.' : 'No output.'}</${ST.Empty}>`}
             ${(j.lateReturnVal != null || j.lateErrorVal != null) ? html`<div class="st-section-title mt-3">Result received after cancelling</div><pre class="st-output">${String(j.lateReturnVal != null ? j.lateReturnVal : j.lateErrorVal)}</pre>` : null}
-        </${ST.Modal}>`;
-    };
-
-    // ---- Script editor ----
-
-    var TYPES = [['ps1', 'PowerShell'], ['bat', 'Batch'], ['bash', 'Bash']];
-
-    // Indent or outdent the selected lines of a textarea, or insert spaces at the cursor
-    function handleTab(e, indent) {
-        var ta = e.target, v = ta.value, start = ta.selectionStart, end = ta.selectionEnd;
-        e.preventDefault();
-        var lineStart = v.lastIndexOf('\n', start - 1) + 1;
-        if (start == end && !e.shiftKey) {
-            ta.setRangeText(indent, start, end, 'end');
-        } else {
-            var blockEnd = (end > start && v[end - 1] == '\n') ? end - 1 : end;
-            var lines = v.substring(lineStart, blockEnd).split('\n');
-            var changed = lines.map(function (l) {
-                if (!e.shiftKey) return indent + l;
-                if (l.startsWith(indent)) return l.substring(indent.length);
-                return l.replace(/^[ \t]{1,4}/, '');
-            }).join('\n');
-            ta.setRangeText(changed, lineStart, blockEnd, 'select');
-        }
-        ta.dispatchEvent(new Event('input', { bubbles: true }));
-    }
-
-    // props: scriptId, onClose
-    ST.dialogs.Editor = function (props) {
-        var s = useState(null), script = s[0], setScript = s[1];
-        var orig = useRef(null);
-        var busy = useState(false);
-        useEffect(function () {
-            ST.rpc('getScript', { id: props.scriptId }).then(function (sc) { orig.current = sc; setScript({ name: sc.name, filetype: sc.filetype, content: sc.content || '' }); }, function (e) { ST.ui.toast(e.message, 'error'); props.onClose(); });
-        }, []);
-        var dirty = script != null && orig.current != null && (script.name != orig.current.name || script.filetype != orig.current.filetype || script.content != (orig.current.content || ''));
-        var close = function () {
-            if (!dirty) { props.onClose(); return; }
-            ST.ui.confirm({ title: 'Discard changes?', body: 'Your changes to this script haven\'t been saved.', confirmText: 'Discard', danger: true }).then(function (ok) { if (ok) props.onClose(); });
-        };
-        var save = function (e) {
-            if (e) e.preventDefault();
-            if (!script.name.trim()) { ST.ui.toast('Give the script a name.', 'error'); return; }
-            busy[1](true);
-            ST.rpc('saveScript', { id: props.scriptId, name: script.name, filetype: script.filetype, content: script.content }).then(function () {
-                busy[1](false); orig.current = Object.assign({}, orig.current, script); ST.ui.toast('Script saved.'); setScript(Object.assign({}, script));
-            }, function (ex) { busy[1](false); ST.ui.toast(ex.message, 'error'); });
-        };
-        var set = function (k, v) { setScript(function (o) { var n = Object.assign({}, o); n[k] = v; return n; }); };
-        var onKeyDown = function (e) {
-            if (e.key == 'Tab') handleTab(e, script.filetype == 'bash' ? '  ' : '    ');
-            else if ((e.ctrlKey || e.metaKey) && e.key == 's') { e.preventDefault(); save(); }
-        };
-        return html`<${ST.Modal} size="xl" title=${dirty ? 'Edit script (unsaved)' : 'Edit script'} onClose=${close} footer=${html`
-            <span class="form-text me-auto">Tab indents, Shift+Tab outdents, Ctrl+S saves.</span>
-            <button type="button" class="btn btn-secondary" onClick=${close}>Close</button>
-            <button type="submit" form="st-editor" class="btn btn-primary" disabled=${!dirty || busy[0]}>${busy[0] ? html`<${ST.Spinner} class="me-1" />` : null}Save</button>`}>
-            ${script == null ? html`<div class="text-center py-5"><${ST.Spinner} /></div>` : html`
-            <form id="st-editor" onSubmit=${save}>
-                <div class="row g-2 mb-2">
-                    <div class="col-sm-8"><label class="form-label" for="st-ed-name">Name</label><input id="st-ed-name" class="form-control" value=${script.name} onInput=${function (e) { set('name', e.target.value); }} /></div>
-                    <div class="col-sm-4"><label class="form-label" for="st-ed-type">Type</label><select id="st-ed-type" class="form-select" value=${script.filetype} onChange=${function (e) { set('filetype', e.target.value); }}>${TYPES.map(function (t) { return html`<option value=${t[0]}>${t[1]}</option>`; })}</select></div>
-                </div>
-                <textarea class="form-control st-code" spellcheck=${false} autocomplete="off" autocapitalize="off" aria-label="Script" value=${script.content} onInput=${function (e) { set('content', e.target.value); }} onKeyDown=${onKeyDown}></textarea>
-            </form>`}
         </${ST.Modal}>`;
     };
 
@@ -327,10 +261,10 @@
 
     var SCOPES = [['global', 'Global (all devices)'], ['script', 'This script'], ['mesh', 'This device group'], ['node', 'This device']];
 
-    // props: variable (optional, for editing), targets: { script: {id,name}|null, mesh: {id,name}, node: {id,name} }, onClose
+    // props: variable (optional, for editing), targets: { script: {id,name}|null, mesh: {id,name}, node: {id,name} }, scopes (optional list), onClose
     ST.dialogs.Variable = function (props) {
         var v = props.variable;
-        var s = useState({ name: v ? v.name : '', scope: v ? v.scope : 'global', value: v ? v.value : '' }), f = s[0], setF = s[1];
+        var s = useState({ name: v ? v.name : '', scope: v ? v.scope : (props.scope || 'global'), value: v ? v.value : '' }), f = s[0], setF = s[1];
         var busy = useState(false), err = useState(null);
         var set = function (k, val) { setF(function (o) { var n = Object.assign({}, o); n[k] = val; return n; }); };
         // When editing, keep the variable's existing target unless its scope changes
@@ -360,7 +294,7 @@
                 <div class="mb-3">
                     <label class="form-label" for="st-var-scope">Applies to</label>
                     <select id="st-var-scope" class="form-select" value=${f.scope} onChange=${function (e) { set('scope', e.target.value); }}>
-                        ${SCOPES.map(function (sc) { return html`<option value=${sc[0]}>${sc[1]}</option>`; })}
+                        ${SCOPES.filter(function (sc) { return props.scopes == null || props.scopes.indexOf(sc[0]) >= 0; }).map(function (sc) { return html`<option value=${sc[0]}>${sc[1]}</option>`; })}
                     </select>
                     ${f.scope != 'global' ? html`<div class="form-text">${t ? t.name : 'No script selected.'}</div>` : null}
                 </div>

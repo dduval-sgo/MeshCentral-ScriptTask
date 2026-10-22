@@ -125,3 +125,47 @@ textarea.form-control.st-code { font-family: var(--st-mono); font-size: .85rem; 
 .st-group-title { font-size: .85rem; font-weight: 600; color: var(--bs-secondary-color); margin: 1.5rem 0 .75rem; padding-top: .75rem; border-top: 1px dashed var(--bs-border-color); }
 .st-lib-actions .st-script-head { font-size: .9rem; }
 .st-window { max-width: 16rem; }
+
+/* Code editor and output view */
+.st-code-editor { height: 100%; }
+.st-code-editor .cm-editor { border: 1px solid var(--bs-border-color); border-radius: var(--bs-border-radius); }
+.st-code-editor .cm-editor.cm-focused { outline: 2px solid var(--bs-primary-border-subtle); outline-offset: -1px; }
+.st-output-frame { height: min(60vh, calc(100vh - 24rem)); min-height: 12rem; }
+
+/* ScriptTask page (My Server > Plugins): full-height app shell inside MeshCentral's plugin frame */
+body.st-page-server { padding: 0; overflow: hidden; background: var(--bs-body-bg); }
+.st-shell { display: flex; height: 100vh; }
+.st-sidenav { flex: none; width: 12rem; display: flex; flex-direction: column; gap: .5rem; padding: .75rem; border-right: 1px solid var(--bs-border-color); background: var(--bs-tertiary-bg); }
+.st-brand { font-weight: 600; font-size: 1.05rem; padding: .25rem .5rem .5rem; display: flex; align-items: center; }
+.st-sidenav .nav-link { display: flex; align-items: center; padding: .4rem .6rem; }
+.st-sidenav-foot { margin-top: auto; font-size: .75rem; color: var(--bs-secondary-color); padding: 0 .5rem; }
+.st-main { flex: 1 1 auto; min-width: 0; overflow: auto; padding: 1rem; }
+.st-library { display: grid; grid-template-columns: minmax(15rem, 20rem) minmax(0, 1fr); gap: 1rem; height: 100%; min-height: 0; }
+.st-lib-tree { min-height: 0; overflow: auto; }
+.st-lib-tree .st-card { margin-bottom: 0; min-height: 100%; }
+.st-lib-tree .st-tree { max-height: none; }
+.st-lib-detail { min-height: 0; display: flex; flex-direction: column; overflow: hidden; }
+.st-workspace { display: flex; flex-direction: column; min-height: 0; flex: 1 1 auto; }
+.st-workspace-head { display: flex; align-items: center; gap: .75rem; flex-wrap: wrap; padding: .75rem 1rem .5rem; }
+.st-actions-row { margin-left: auto; display: flex; gap: .35rem; flex-wrap: wrap; }
+.st-tabs { padding: 0 1rem; }
+.st-tabs .nav-link { padding: .4rem .8rem; }
+.st-tab-body { padding: 1rem; overflow: auto; min-height: 0; flex: 1 1 auto; }
+.st-tab-body.st-tab-editor { display: flex; flex-direction: column; overflow: hidden; padding-bottom: .5rem; }
+.st-editor-toolbar { display: flex; align-items: center; gap: .5rem; flex-wrap: wrap; margin-bottom: .5rem; }
+.st-editor-frame { flex: 1 1 auto; min-height: 18rem; }
+.st-statusbar { display: flex; align-items: center; gap: 1rem; flex-wrap: wrap; font-size: .78rem; color: var(--bs-secondary-color); padding-top: .4rem; }
+.st-statusbar label { display: inline-flex; align-items: center; gap: .3rem; margin: 0; }
+.st-status-select { font-size: .78rem; border: 1px solid transparent; background: transparent; color: var(--bs-body-color); border-radius: var(--bs-border-radius-sm); padding: 0 .2rem; }
+.st-status-select:hover:not(:disabled) { border-color: var(--bs-border-color); }
+.st-settings-page { max-width: 46rem; }
+
+@media (max-width: 767.98px) {
+    body.st-page-server { overflow: auto; }
+    .st-shell { flex-direction: column; height: auto; min-height: 100vh; }
+    .st-sidenav { width: auto; flex-direction: row; align-items: center; border-right: 0; border-bottom: 1px solid var(--bs-border-color); }
+    .st-sidenav-foot { display: none; }
+    .st-library { grid-template-columns: 1fr; height: auto; }
+    .st-lib-tree .st-tree { max-height: 18rem; }
+    .st-tab-body.st-tab-editor { height: 70vh; }
+}

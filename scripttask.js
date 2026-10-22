@@ -206,7 +206,9 @@ module.exports.scripttask = function (parent) {
             res.render(obj.VIEWS + 'device', { version: obj.version });
             return;
         }
-        res.sendStatus(401);
+        // The ScriptTask page, opened from My Server > Plugins (MeshCentral's goPlugin sends no other parameters)
+        if (!obj.hasPerm(user, 'manage')) { res.status(403).send('The ScriptTask page is for ScriptTask managers.'); return; }
+        res.render(obj.VIEWS + 'server', { version: obj.version });
     };
 
     // ---- Scheduling ----
@@ -299,8 +301,8 @@ module.exports.scripttask = function (parent) {
         var send = function(targets, payload) {
             obj.meshServer.DispatchEvent(targets, obj, Object.assign({ nolog: true, action: 'plugin', plugin: 'scripttask', pluginaction: 'onInvalidate' }, payload));
         };
-        if (scopes.library || scopes.variables || (scopes.scriptIds && scopes.scriptIds.length)) {
-            send(['server-allusers'], { library: scopes.library === true, variables: scopes.variables === true, scriptIds: scopes.scriptIds || [] });
+        if (scopes.library || scopes.variables || scopes.settings || (scopes.scriptIds && scopes.scriptIds.length)) {
+            send(['server-allusers'], { library: scopes.library === true, variables: scopes.variables === true, settings: scopes.settings === true, scriptIds: scopes.scriptIds || [] });
         }
         (scopes.nodeIds || []).forEach(function(nodeId) {
             obj.meshServer.db.Get(nodeId, function(err, nodes) {
@@ -560,6 +562,7 @@ module.exports.scripttask = function (parent) {
         if (!(s.defaultOfflineWindow >= 60 && s.defaultOfflineWindow <= 30 * 86400)) throw new RpcError('The default window must be between 1 minute and 30 days.');
         await obj.db.saveSettings(s);
         obj.settingsCache = null;
+        obj.invalidate({ settings: true });
         return obj.getSettings();
     };
 

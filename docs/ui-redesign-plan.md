@@ -354,7 +354,12 @@ Each step can ship on its own and keeps the plugin working.
    - Schedules store the creating browser's IANA time zone and are calculated in it (`schedule.js`, no dependencies). Schedules from earlier versions have none and use the server's zone.
    - Existing schedules need no migration. Missing fields mean "run when it reconnects" and "keep the original schedule", which is the old behaviour.
    - Skip is a window equal to the server-wide grace period. Settings are stored in a `settings` document; the Settings dialog sits in the device tab's manager tools until the server page exists.
-4. **Server page shell + Library + editor.** `hasAdminPanel: true`, CodeMirror bundle, tree, editor, script-scoped tabs.
+4. ✅ **Server page shell + Library + editor** (done). `hasAdminPanel: true`, CodeMirror bundle, tree, editor, script-scoped tabs.
+   Notes from building it:
+   - The editor bundle (`includes/vendor/st-codemirror.min.js`, 421 KB) is built by `tools/build-editor` (esbuild, packages pinned) and loads only when an editor or output view opens. `LICENSE-codemirror` lists the 28 bundled packages, all MIT.
+   - `#var#` tokens are matched before the language's own rules, so PowerShell and Bash don't treat them as the start of a comment.
+   - Non-site-admin managers can't see My Server > Plugins, so the device tab's Open ScriptTask button is their way in. It uses MeshCentral's own `goPlugin`, with the target script passed through localStorage.
+   - The section nav has Library and Settings so far. Queue, Schedules, History, Run/Batch, Variables and Overview arrive in steps 5 to 7.
 5. **Queue, Schedules, History (server-wide).** Paged queries, filters, bulk actions. Schedules sorted by next run.
 6. **Run/Batch + batch results.** Device picker, `batchId`, grouped results matrix.
 7. **Variables + Settings + Overview.**

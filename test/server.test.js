@@ -346,3 +346,17 @@ test('schedules from before this version keep working without migration', async 
     const next = jobs.find(j => j.completeTime == null);
     assert.strictEqual(next.slot, start + 86400 * 21, 'next run is tomorrow on the original grid, with no catch-up');
 });
+
+test('the ScriptTask page is for managers; the device tab is for everyone', async function () {
+    const ctx = createPlugin(); await ready(ctx);
+    const call = function (user, query) {
+        const res = { code: 200, rendered: null, status: function (c) { this.code = c; return this; }, send: function () { }, sendStatus: function (c) { this.code = c; }, render: function (v) { this.rendered = path.basename(v); } };
+        ctx.plugin.handleAdminReq({ query: query }, res, USERS[user]);
+        return res;
+    };
+    assert.deepStrictEqual([call('admin', {}).rendered, call('alice', {}).code, call('alice', {}).rendered], ['server', 403, null]);
+    assert.strictEqual(call('alice', { user: '1' }).rendered, 'device');
+    // Saving settings tells open pages to reload them
+    await rpc(ctx.plugin, 'admin', 'saveSettings', { skipGraceSeconds: 180, defaultOfflineWindow: 7200 });
+    assert.ok(ctx.events.some(function (e) { return e.ev.settings === true && e.targets[0] == 'server-allusers'; }));
+});
