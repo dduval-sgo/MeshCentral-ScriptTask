@@ -20,9 +20,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - Device tab: searchable script picker with per-user favourites. Scripts that can't run on the device's OS are listed but can't be chosen, with the reason shown.
 - Run again from any history row.
 - Long queues and schedule lists show the first 10 rows, with Show more.
+- Per-schedule handling of offline devices: run when it reconnects (as before), run only if it reconnects within a set time, or skip. Runs that don't happen are recorded as Missed.
+- Per-schedule handling of late runs (minutes, hourly and daily schedules): keep the original times, or shift to when the run actually happened.
+- Edit and pause/resume schedules. Users can change schedules they created; managers can change any.
+- Settings for managers: the Skip grace period (default 2 minutes, server-wide) and defaults for new schedules.
+- Due runs start within seconds of a device connecting, instead of at the next minute's queue check.
 - Server tests (`node --test test/*.test.js`).
 
 ### Fixed
+- Schedules are calculated in the time zone they were created in, so "daily at 09:00" stays at 09:00 across daylight-saving changes.
+- A device that was offline no longer gets a burst of catch-up runs for a weekly schedule, and a schedule's end time is honoured.
 - Script names, variable values and script output are no longer inserted into the page as HTML.
 - Renaming or moving a folder no longer flattens its subfolders. Deleting a folder removes everything below it, with their schedules.
 - Agents can only report results for their own jobs.

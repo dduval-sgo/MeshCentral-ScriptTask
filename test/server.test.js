@@ -209,3 +209,140 @@ test('include paths are restricted to the includes folder', async function () {
     ctx.plugin.serveInclude({ query: { path: 'vendor/preact-10.29.8.umd.js' } }, res);
     assert.deepStrictEqual(served, [['vendor/preact-10.29.8.umd.js', path.join(__dirname, '..', 'includes') + '/']]);
 });
+
+// ---- Scheduling engine ----
+
+async function scheduleOn(ctx, user, sched) {
+    const sid = (await rpc(ctx.plugin, 'admin', 'addScript', { name: 'S' + Math.random(), filetype: 'bash', content: 'true' })).data.id;
+    const r = await rpc(ctx.plugin, user, 'addSchedule', { scriptId: sid, nodeIds: [LIN], schedule: sched });
+    assert.ok(r.ok, JSON.stringify(r));
+    const d = (await rpc(ctx.plugin, user, 'nodeData', { nodeId: LIN })).data;
+    return { sid, schedule: d.schedules.find(s => s.scriptId == sid), jobs: d.queue.filter(j => j.scriptId == sid), d };
+}
+async function jobsFor(ctx, scriptId) { return (await ctx.plugin.db.scriptFile.find({ type: 'job', scriptId: scriptId }).toArray()).sort((a, b) => a.slot - b.slot); }
+const nowS = () => Math.floor(Date.now() / 1000);
+
+test('a new schedule gets one job for its first slot', async function () {
+    const ctx = createPlugin(); await ready(ctx);
+    const start = nowS() + 3600;
+    const r = await scheduleOn(ctx, 'alice', { recur: 'daily', interval: 1, startAt: start, timezone: 'America/New_York' });
+    assert.strictEqual(r.jobs.length, 1);
+    assert.strictEqual(r.jobs[0].slot, start);
+    assert.strictEqual(r.jobs[0].expiresAt, null);
+    assert.strictEqual(r.schedule.nextRun, start);
+    await ctx.plugin.queueRun();
+    assert.strictEqual((await jobsFor(ctx, r.sid)).length, 1, 'no duplicate jobs from the queue tick');
+});
+
+test('offline policies: Skip and an expired window are Missed, Wait keeps waiting, no backlog', async function () {
+    const ctx = createPlugin(); await ready(ctx);
+    const past = nowS() - 200; // first slot 200s ago, device offline
+    const skip = await scheduleOn(ctx, 'admin', { recur: 'minutes', interval: 60, startAt: past, offlinePolicy: 'skip' });
+    const wait = await scheduleOn(ctx, 'admin', { recur: 'minutes', interval: 60, startAt: past, offlinePolicy: 'wait' });
+    const win = await scheduleOn(ctx, 'admin', { recur: 'minutes', interval: 60, startAt: past, offlinePolicy: 'window', offlineWindow: 120 });
+    const winLong = await scheduleOn(ctx, 'admin', { recur: 'minutes', interval: 60, startAt: past, offlinePolicy: 'window', offlineWindow: 3600 });
+    assert.strictEqual(skip.jobs[0].expiresAt, past + 120, 'Skip uses the server-wide grace period');
+    await ctx.plugin.queueRun();
+    const s = await jobsFor(ctx, skip.sid), w = await jobsFor(ctx, wait.sid), wn = await jobsFor(ctx, win.sid), wl = await jobsFor(ctx, winLong.sid);
+    assert.deepStrictEqual(s.map(j => [j.slot - past, j.missed === true, j.completeTime != null]), [[0, true, true], [3600, false, false]]);
+    assert.deepStrictEqual(wn.map(j => [j.slot - past, j.missed === true]), [[0, true], [3600, false]]);
+    assert.deepStrictEqual(w.map(j => [j.slot - past, j.completeTime]), [[0, null]], 'Wait keeps the overdue job and adds nothing');
+    assert.deepStrictEqual(wl.map(j => [j.slot - past, j.completeTime]), [[0, null]]);
+    const hist = (await rpc(ctx.plugin, 'admin', 'nodeData', { nodeId: LIN })).data.history;
+    assert.ok(hist.some(j => j.missed && j.scriptId == skip.sid), 'Missed run is in history');
+});
+
+test('an online device gets due jobs, but not expired ones', async function () {
+    const ctx = createPlugin(); await ready(ctx);
+    const sent = [];
+    ctx.plugin.meshServer.webserver.wsagents[LIN] = { dbMeshKey: MESH, send: function (m) { sent.push(JSON.parse(m)); } };
+    const due = await scheduleOn(ctx, 'admin', { recur: 'minutes', interval: 60, startAt: nowS() - 30, offlinePolicy: 'skip' });
+    const stale = await scheduleOn(ctx, 'admin', { recur: 'minutes', interval: 60, startAt: nowS() - 250, offlinePolicy: 'skip' });
+    await ctx.plugin.queueRun(); await wait(150);
+    assert.deepStrictEqual(sent.map(m => m.scriptId), [due.sid]);
+    assert.ok((await jobsFor(ctx, stale.sid))[0].missed);
+    delete ctx.plugin.meshServer.webserver.wsagents[LIN];
+});
+
+test('pause and resume skip the slots in between; cancelling a run skips one occurrence', async function () {
+    const ctx = createPlugin(); await ready(ctx);
+    const start = nowS() + 600;
+    const r = await scheduleOn(ctx, 'alice', { recur: 'hourly', interval: 1, startAt: start });
+    assert.ok((await rpc(ctx.plugin, 'alice', 'pauseSchedule', { scheduleId: r.schedule._id, paused: true })).ok);
+    await ctx.plugin.queueRun();
+    assert.strictEqual((await jobsFor(ctx, r.sid)).length, 0, 'paused: no job, and the tick does not add one');
+    assert.ok((await rpc(ctx.plugin, 'alice', 'pauseSchedule', { scheduleId: r.schedule._id, paused: false })).ok);
+    let jobs = await jobsFor(ctx, r.sid);
+    assert.deepStrictEqual(jobs.map(j => j.slot), [start], 'resumes at the next slot from now');
+    assert.ok((await rpc(ctx.plugin, 'alice', 'cancelJob', { jobId: jobs[0]._id })).ok);
+    jobs = await jobsFor(ctx, r.sid);
+    assert.deepStrictEqual(jobs.map(j => j.slot), [start + 3600], 'cancelling skips to the following slot');
+    // Bob can't touch alice's schedule; admin can
+    assert.strictEqual((await rpc(ctx.plugin, 'bob', 'pauseSchedule', { scheduleId: r.schedule._id, paused: true })).ok, false);
+});
+
+test('late runs keep the grid, or shift to the actual run time', async function () {
+    const ctx = createPlugin(); await ready(ctx);
+    const keep = await scheduleOn(ctx, 'admin', { recur: 'hourly', interval: 1, startAt: nowS() - 250, anchor: 'slot' });
+    const shift = await scheduleOn(ctx, 'admin', { recur: 'hourly', interval: 1, startAt: nowS() - 250, anchor: 'actual' });
+    for (const r of [keep, shift]) {
+        const j = (await jobsFor(ctx, r.sid))[0];
+        await ctx.plugin.db.update(j._id, { dispatchTime: nowS() - 10 }); // ran ~4 minutes late
+        agentSends(ctx.plugin, LIN, { pluginaction: 'jobComplete', jobId: j._id, scriptId: r.sid, retVal: 'ok', errVal: null, dispatchTime: nowS() - 10 });
+    }
+    await wait(200);
+    const k = await jobsFor(ctx, keep.sid), sh = await jobsFor(ctx, shift.sid);
+    assert.strictEqual(k[1].slot - k[0].slot, 3600, 'keeps the original grid');
+    assert.strictEqual(sh[1].slot, nowS() - 10 + 3600, 'next run an hour after it actually ran');
+    // Weekly schedules can't shift
+    const wk = await scheduleOn(ctx, 'admin', { recur: 'weekly', interval: 1, daysOfWeek: [1], startAt: nowS() + 60, anchor: 'actual' });
+    assert.strictEqual(wk.schedule.anchor, 'slot');
+});
+
+test('editing a schedule restarts it from now, and rejects a one-time run in the past', async function () {
+    const ctx = createPlugin(); await ready(ctx);
+    const r = await scheduleOn(ctx, 'alice', { recur: 'daily', interval: 1, startAt: nowS() + 600 });
+    const bad = await rpc(ctx.plugin, 'alice', 'updateSchedule', { scheduleId: r.schedule._id, schedule: { recur: 'once', startAt: nowS() - 3600 } });
+    assert.strictEqual(bad.error, 'Choose a time in the future.');
+    const start2 = nowS() + 7200;
+    assert.ok((await rpc(ctx.plugin, 'alice', 'updateSchedule', { scheduleId: r.schedule._id, schedule: { recur: 'hourly', interval: 2, startAt: start2, offlinePolicy: 'skip' } })).ok);
+    const jobs = await jobsFor(ctx, r.sid);
+    assert.deepStrictEqual(jobs.map(j => [j.slot, j.expiresAt]), [[start2, start2 + 120]]);
+    // A one-time schedule is removed after its run
+    const once = await scheduleOn(ctx, 'admin', { recur: 'once', startAt: nowS() + 30 });
+    const oj = (await jobsFor(ctx, once.sid))[0];
+    agentSends(ctx.plugin, LIN, { pluginaction: 'jobComplete', jobId: oj._id, scriptId: once.sid, retVal: 'ok', errVal: null, dispatchTime: nowS() });
+    await wait(200);
+    const d = (await rpc(ctx.plugin, 'admin', 'nodeData', { nodeId: LIN })).data;
+    assert.ok(!d.schedules.some(s => s.scriptId == once.sid), 'one-time schedule removed');
+});
+
+test('settings: managers only, validated, and used for Skip', async function () {
+    const ctx = createPlugin(); await ready(ctx);
+    assert.strictEqual((await rpc(ctx.plugin, 'alice', 'saveSettings', { skipGraceSeconds: 300 })).ok, false);
+    assert.strictEqual((await rpc(ctx.plugin, 'admin', 'saveSettings', { skipGraceSeconds: 5, defaultOfflineWindow: 7200 })).ok, false);
+    const saved = await rpc(ctx.plugin, 'admin', 'saveSettings', { skipGraceSeconds: 300, defaultOfflinePolicy: 'window', defaultOfflineWindow: 1800, defaultAnchor: 'actual' });
+    assert.deepStrictEqual(saved.data, { skipGraceSeconds: 300, defaultOfflinePolicy: 'window', defaultOfflineWindow: 1800, defaultAnchor: 'actual' });
+    assert.deepStrictEqual((await rpc(ctx.plugin, 'alice', 'init', { nodeId: LIN })).data.settings, saved.data);
+    const start = nowS() + 60;
+    const r = await scheduleOn(ctx, 'admin', { recur: 'minutes', interval: 5, startAt: start, offlinePolicy: 'skip' });
+    assert.strictEqual(r.jobs[0].expiresAt, start + 300);
+});
+
+test('schedules from before this version keep working without migration', async function () {
+    const ctx = createPlugin(); await ready(ctx);
+    const sid = (await rpc(ctx.plugin, 'admin', 'addScript', { name: 'Legacy', filetype: 'bash', content: 'true' })).data.id;
+    const start = nowS() - 86400 * 20 - 3600; // daily, started 20 days ago at this time minus an hour
+    // A schedule and pending job as the old engine stored them: no policy, anchor, time zone, lastSlot or slot fields
+    const sched = await ctx.plugin.db.addJobSchedule({ scriptId: sid, node: LIN, scheduledBy: 'admin', recur: 'daily', interval: 1, daysOfWeek: [], startAt: start, endAt: null, lastRun: null, nextRun: start + 86400 * 20, type: 'jobSchedule' });
+    await ctx.plugin.db.addJob({ scriptId: sid, scriptName: 'Legacy', node: LIN, runBy: 'admin', dontQueueUntil: start + 86400 * 20, jobSchedule: sched.insertedId });
+    await ctx.plugin.queueRun();
+    let jobs = await jobsFor(ctx, sid);
+    assert.strictEqual(jobs.length, 1, 'the existing pending job is kept; nothing is added');
+    assert.strictEqual(jobs[0].completeTime, null, 'a legacy job never expires (wait policy)');
+    agentSends(ctx.plugin, LIN, { pluginaction: 'jobComplete', jobId: jobs[0]._id, scriptId: sid, retVal: 'ok', errVal: null, dispatchTime: nowS() });
+    await wait(200);
+    jobs = await jobsFor(ctx, sid);
+    const next = jobs.find(j => j.completeTime == null);
+    assert.strictEqual(next.slot, start + 86400 * 21, 'next run is tomorrow on the original grid, with no catch-up');
+});

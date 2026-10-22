@@ -112,14 +112,34 @@
             }
             return txt;
         },
-        filetype: function (t) { return { ps1: 'PowerShell', bat: 'Batch', bash: 'Bash' }[t] || t; }
+        filetype: function (t) { return { ps1: 'PowerShell', bat: 'Batch', bash: 'Bash' }[t] || t; },
+        // A length of time in words, e.g. 7200 -> "2 hours"
+        span: function (sec) {
+            if (sec % 86400 == 0) return (sec / 86400) + ' day' + (sec == 86400 ? '' : 's');
+            if (sec % 3600 == 0) return (sec / 3600) + ' hour' + (sec == 3600 ? '' : 's');
+            return Math.round(sec / 60) + ' minute' + (sec == 60 ? '' : 's');
+        },
+        // What a schedule does when its device is offline, and with late runs
+        policy: function (s, settings) {
+            var txt;
+            if (s.offlinePolicy == 'skip') txt = 'Skipped if the device is offline at the time';
+            else if (s.offlinePolicy == 'window') txt = 'Skipped if the device is offline for more than ' + ST.fmt.span(s.offlineWindow);
+            else txt = 'Runs when the device reconnects';
+            if (s.anchor == 'actual') txt += '; late runs shift the schedule';
+            return txt;
+        },
+        // The viewer's time zone, and a note when a schedule uses a different one
+        zone: (typeof Intl != 'undefined') ? Intl.DateTimeFormat().resolvedOptions().timeZone : null,
+        zoneNote: function (s) { return (s.timezone && s.timezone != ST.fmt.zone) ? s.timezone + ' time' : ''; }
     };
 
     // A job's state, from its timestamps
     ST.jobStatus = function (j, online) {
         if (j.cancelled) return 'cancelled';
+        if (j.missed) return 'missed';
         if (j.completeTime != null) return (j.errorVal != null && j.returnVal == null) ? 'error' : 'complete';
         if (j.dispatchTime != null) return 'dispatched';
+        if (j.expiresAt != null && j.expiresAt <= ST.now()) return 'missed'; // Past its offline deadline; the next queue check records it
         if (j.dontQueueUntil != null && j.dontQueueUntil > ST.now()) return 'scheduled';
         return online ? 'queued' : 'waiting';
     };
@@ -142,7 +162,9 @@
         dispatched: { label: 'Running', cls: 'text-bg-info', icon: 'send', title: 'Sent to the device. Waiting for its result.' },
         complete: { label: 'Completed', cls: 'text-bg-success', icon: 'check-circle-fill', title: '' },
         error: { label: 'Error', cls: 'text-bg-danger', icon: 'exclamation-octagon-fill', title: '' },
-        cancelled: { label: 'Cancelled', cls: 'st-badge-outline', icon: 'slash-circle', title: '' }
+        cancelled: { label: 'Cancelled', cls: 'st-badge-outline', icon: 'slash-circle', title: '' },
+        missed: { label: 'Missed', cls: 'text-bg-warning', icon: 'calendar-x', title: 'The device was offline for longer than the schedule allows, so this run was skipped.' },
+        paused: { label: 'Paused', cls: 'st-badge-outline', icon: 'pause-fill', title: 'This schedule won\'t run until it is resumed.' }
     };
     ST.StatusBadge = function (props) {
         var s = STATUS[props.status] || STATUS.queued;

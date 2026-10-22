@@ -124,3 +124,4 @@ textarea.form-control.st-code { font-family: var(--st-mono); font-size: .85rem; 
 /* Manager-only section */
 .st-group-title { font-size: .85rem; font-weight: 600; color: var(--bs-secondary-color); margin: 1.5rem 0 .75rem; padding-top: .75rem; border-top: 1px dashed var(--bs-border-color); }
 .st-lib-actions .st-script-head { font-size: .9rem; }
+.st-window { max-width: 16rem; }

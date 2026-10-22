@@ -137,25 +137,26 @@ module.exports.CreateDB = function(meshserver) {
         obj.removeJobSchedule = function (id) {
             return obj.delete(id);
         };
-        obj.getSchedulesDueForJob = function(scheduleId) {
-            var nowTime = Math.floor(new Date() / 1000);
-            var scheduleIdLimiter = {};
-            if (scheduleId != null) {
-                scheduleIdLimiter._id = scheduleId;
-            }
-            return obj.scriptFile.find( { 
-                type: 'jobSchedule',
-                // startAt: { $gte: nowTime },
-                $or: [
-                    { endAt: null },
-                    { endAt: { $lte: nowTime } }
-                ],
-                $or: [
-                    { nextRun: null }, 
-                    { nextRun: { $lte: (nowTime + 60) } } // check a minute into the future
-                ],
-                ...scheduleIdLimiter
-            }).toArray();
+        // Schedules that aren't paused (optionally just one)
+        obj.getActiveSchedules = function(scheduleId) {
+            var find = { type: 'jobSchedule', paused: { $ne: true } };
+            if (scheduleId != null) find._id = formatId(scheduleId);
+            return obj.scriptFile.find(find).toArray();
+        };
+        // Ids of schedules that already have a job waiting or running
+        obj.getScheduleIdsWithIncompleteJobs = function() {
+            return obj.scriptFile.find( { type: 'job', completeTime: null, jobSchedule: { $ne: null } } ).project( { jobSchedule: 1 } ).toArray()
+            .then((jobs) => jobs.map(j => String(j.jobSchedule)));
+        };
+        // Jobs that were never sent and are past the time their schedule's offline policy allows
+        obj.getExpiredJobs = function(nowTime) {
+            return obj.scriptFile.find( { type: 'job', completeTime: null, dispatchTime: null, expiresAt: { $lte: nowTime } } ).toArray();
+        };
+        obj.getSettings = function() {
+            return obj.scriptFile.find( { type: 'settings' } ).toArray().then((docs) => docs[0] || {});
+        };
+        obj.saveSettings = function(settings) {
+            return obj.scriptFile.updateOne( { type: 'settings' }, { $set: settings }, { upsert: true } );
         };
         obj.deletePendingJobsForNode = function(node) {
             return obj.scriptFile.deleteMany({ 
@@ -168,15 +169,16 @@ module.exports.CreateDB = function(meshserver) {
           if (nodeScope == null || !Array.isArray(nodeScope)) {
             return false;
           }
-          // return jobs that has online nodes and queue time requirements have been met
+          // return jobs that has online nodes and queue time requirements have been met, and haven't expired
+          var nowTime = Math.floor(new Date() / 1000);
           return obj.scriptFile.find( { 
               type: 'job', 
               node: { $in: nodeScope },
               completeTime: null,
               //dispatchTime: null,
-              $or: [
-                  { dontQueueUntil: null }, 
-                  { dontQueueUntil: { $lte: Math.floor(new Date() / 1000) } }
+              $and: [
+                  { $or: [ { dontQueueUntil: null }, { dontQueueUntil: { $lte: nowTime } } ] },
+                  { $or: [ { expiresAt: { $exists: false } }, { expiresAt: null }, { expiresAt: { $gt: nowTime } } ] }
               ]
           }).toArray();
         };
@@ -210,6 +212,9 @@ module.exports.CreateDB = function(meshserver) {
         };
         obj.getIncompleteJobsForSchedule = function (schedId) {
             return obj.scriptFile.find( { type: 'job', jobSchedule: schedId, completeTime: null } ).toArray();
+        };
+        obj.deleteUndispatchedJobsForSchedule = function (schedId) {
+            return obj.scriptFile.deleteMany( { type: 'job', jobSchedule: schedId, completeTime: null, dispatchTime: null } );
         };
         obj.deletePendingJobsForSchedule = function (schedId) {
             return obj.scriptFile.deleteMany( { type: 'job', jobSchedule: schedId, completeTime: null } );

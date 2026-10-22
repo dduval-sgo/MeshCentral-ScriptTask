@@ -22,21 +22,49 @@
     var RECURS = [['once', 'Once'], ['minutes', 'Minutes'], ['hourly', 'Hourly'], ['daily', 'Daily'], ['weekly', 'Weekly']];
     var UNITS = { minutes: 'minute(s)', hourly: 'hour(s)', daily: 'day(s)', weekly: 'week(s)' };
     var DAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+    var SPAN_UNITS = [[60, 'minutes'], [3600, 'hours'], [86400, 'days']];
+    // Split seconds into the largest whole unit, e.g. 7200 -> [2, 3600]
+    function splitSpan(sec) {
+        for (var i = SPAN_UNITS.length - 1; i >= 0; i--) if (sec % SPAN_UNITS[i][0] == 0) return [sec / SPAN_UNITS[i][0], SPAN_UNITS[i][0]];
+        return [Math.round(sec / 60), 60];
+    }
 
-    // props: title, subtitle, onSubmit(schedule) -> Promise (resolve to close), onClose
+    // props: title, subtitle, schedule (when editing), settings (server defaults), onSubmit(schedule) -> Promise (resolve to close), onClose
     ST.dialogs.Schedule = function (props) {
-        var s = useState({ recur: 'once', start: localInput(nextFiveMinutes()), interval: 1, days: [new Date().getDay()], endNever: true, end: '' });
+        var initial = useMemo(function () {
+            var e = props.schedule, d = props.settings || {};
+            if (e == null) {
+                var win = splitSpan(d.defaultOfflineWindow || 7200);
+                return { recur: 'once', start: localInput(nextFiveMinutes()), interval: 1, days: [new Date().getDay()], endNever: true, end: '',
+                    offline: d.defaultOfflinePolicy || 'wait', windowN: win[0], windowUnit: win[1], anchor: d.defaultAnchor || 'slot' };
+            }
+            // Editing: keep the schedule's settings. A start time that has passed is shown as its next run.
+            var startAt = (e.startAt < ST.now() && e.nextRun != null && e.nextRun > ST.now()) ? e.nextRun : e.startAt;
+            if (startAt < ST.now()) startAt = Math.floor(nextFiveMinutes().getTime() / 1000);
+            var w = splitSpan(e.offlineWindow || d.defaultOfflineWindow || 7200);
+            var days = (e.daysOfWeek && e.daysOfWeek.length) ? e.daysOfWeek.map(Number) : [new Date(startAt * 1000).getDay()]; // Preselected if switched to weekly
+            return { recur: e.recur, start: localInput(new Date(startAt * 1000)), interval: e.interval || 1, days: days,
+                endNever: e.endAt == null, end: e.endAt ? localInput(new Date(e.endAt * 1000)) : '',
+                offline: e.offlinePolicy || 'wait', windowN: w[0], windowUnit: w[1], anchor: e.anchor || 'slot' };
+        }, []);
+        var s = useState(initial);
         var f = s[0], setF = s[1];
         var busy = useState(false);
         var err = useState(null);
         var set = function (k, v) { setF(function (o) { var n = Object.assign({}, o); n[k] = v; return n; }); };
         var toggleDay = function (d) { set('days', (f.days.indexOf(d) >= 0) ? f.days.filter(function (x) { return x != d; }) : f.days.concat([d])); };
+        var canShift = ['minutes', 'hourly', 'daily'].indexOf(f.recur) >= 0;
+        var grace = props.settings ? props.settings.skipGraceSeconds : 120;
 
         var schedule = function () {
-            var sc = { recur: f.recur, startAt: fromLocalInput(f.start), interval: Number(f.interval), daysOfWeek: f.days.map(String), endAt: null };
+            var sc = { recur: f.recur, startAt: fromLocalInput(f.start), interval: Number(f.interval), daysOfWeek: f.days.map(String), endAt: null,
+                offlinePolicy: f.offline, offlineWindow: (f.offline == 'window') ? Math.round(Number(f.windowN) * f.windowUnit) : null,
+                anchor: canShift ? f.anchor : 'slot', timezone: ST.fmt.zone };
             if (sc.startAt == null) throw new Error('Choose a start time.');
+            if (f.recur == 'once' && sc.startAt < ST.now() - 60) throw new Error('Choose a time in the future.');
             if (f.recur != 'once' && !(sc.interval >= 1)) throw new Error('Interval must be at least 1.');
             if (f.recur == 'weekly' && f.days.length == 0) throw new Error('Choose at least one day.');
+            if (f.offline == 'window' && !(sc.offlineWindow >= 60 && sc.offlineWindow <= 30 * 86400)) throw new Error('The window must be between 1 minute and 30 days.');
             if (f.recur != 'once' && !f.endNever) {
                 sc.endAt = fromLocalInput(f.end);
                 if (sc.endAt == null) throw new Error('Choose an end time, or tick Never.');
@@ -49,7 +77,7 @@
                 var sc = schedule();
                 var txt = ST.fmt.recurrence(sc) + ', starting ' + ST.fmt.time(sc.startAt);
                 if (sc.recur != 'once') txt += sc.endAt ? ', until ' + ST.fmt.time(sc.endAt) : ', with no end';
-                return txt + '.';
+                return txt + '. ' + ST.fmt.policy(sc) + '.';
             } catch (e) { return e.message; }
         })();
         var submit = function (e) {
@@ -59,10 +87,17 @@
             err[1](null); busy[1](true);
             props.onSubmit(sc).then(function () { busy[1](false); }, function (ex) { busy[1](false); err[1](ex.message); });
         };
+        var radio = function (name, value, label, extra) {
+            var id = 'st-' + name + '-' + value;
+            return html`<div class="form-check">
+                <input class="form-check-input" type="radio" name=${'st-' + name} id=${id} checked=${f[name] == value} onChange=${function () { set(name, value); }} />
+                <label class="form-check-label" for=${id}>${label}</label>${extra || null}
+            </div>`;
+        };
 
         return html`<${ST.Modal} title=${props.title || 'Schedule'} onClose=${props.onClose} footer=${html`
             <button type="button" class="btn btn-secondary" onClick=${props.onClose}>Cancel</button>
-            <button type="submit" form="st-schedule" class="btn btn-primary" disabled=${busy[0]}>${busy[0] ? html`<${ST.Spinner} class="me-1" />` : html`<${ST.Icon} name="calendar-plus" class="me-1" />`}Schedule</button>`}>
+            <button type="submit" form="st-schedule" class="btn btn-primary" disabled=${busy[0]}>${busy[0] ? html`<${ST.Spinner} class="me-1" />` : html`<${ST.Icon} name="calendar-plus" class="me-1" />`}${props.schedule ? 'Save schedule' : 'Schedule'}</button>`}>
             <form id="st-schedule" onSubmit=${submit}>
                 ${props.subtitle ? html`<p class="text-body-secondary small mb-3">${props.subtitle}</p>` : null}
                 <div class="mb-3">
@@ -107,8 +142,76 @@
                         <input type="datetime-local" class="form-control w-auto" id="st-end" disabled=${f.endNever} value=${f.end} onInput=${function (e) { set('end', e.target.value); }} />
                     </div>
                 </div>` : null}
+                <div class="row g-3 mb-3">
+                    <fieldset class=${canShift ? 'col-md-7' : 'col-12'}>
+                        <legend class="form-label fs-6">If the device is offline</legend>
+                        ${radio('offline', 'wait', 'Run when it reconnects')}
+                        ${radio('offline', 'window', 'Run if it reconnects within', f.offline == 'window' ? html`
+                            <div class="input-group input-group-sm mt-1 st-window">
+                                <input type="number" min="1" step="1" class="form-control" aria-label="Window length" value=${f.windowN} onInput=${function (e) { set('windowN', e.target.value); }} />
+                                <select class="form-select" aria-label="Window unit" value=${f.windowUnit} onChange=${function (e) { set('windowUnit', Number(e.target.value)); }}>
+                                    ${SPAN_UNITS.map(function (u) { return html`<option value=${u[0]}>${u[1]}</option>`; })}
+                                </select>
+                            </div>` : null)}
+                        ${radio('offline', 'skip', 'Skip', html`<div class="form-text mt-0">Runs only if the device is online within ${ST.fmt.span(grace)} of the scheduled time.</div>`)}
+                    </fieldset>
+                    ${canShift ? html`<fieldset class="col-md-5">
+                        <legend class="form-label fs-6">If a run happens late</legend>
+                        ${radio('anchor', 'slot', 'Keep the original schedule')}
+                        ${radio('anchor', 'actual', 'Shift to the actual run time')}
+                    </fieldset>` : null}
+                </div>
                 <div class="form-text">${summary}</div>
-                <div class="form-text">Scheduled runs only happen while the device is online. A run that's due while it's offline happens when it reconnects.</div>
+                ${props.schedule && props.schedule.timezone && props.schedule.timezone != ST.fmt.zone ? html`<div class="form-text">This schedule was created in ${props.schedule.timezone} time. Saving it uses your time zone (${ST.fmt.zone}).</div>` : null}
+                ${err[0] ? html`<div class="alert alert-danger py-2 mt-3 mb-0">${err[0]}</div>` : null}
+            </form>
+        </${ST.Modal}>`;
+    };
+
+    // ---- Settings (managers) ----
+
+    // props: settings, onSaved(settings), onClose
+    ST.dialogs.Settings = function (props) {
+        var st = props.settings;
+        var w = splitSpan(st.defaultOfflineWindow);
+        var s = useState({ grace: Math.round(st.skipGraceSeconds / 60), offline: st.defaultOfflinePolicy, windowN: w[0], windowUnit: w[1], anchor: st.defaultAnchor });
+        var f = s[0], setF = s[1];
+        var busy = useState(false), err = useState(null);
+        var set = function (k, v) { setF(function (o) { var n = Object.assign({}, o); n[k] = v; return n; }); };
+        var submit = function (e) {
+            e.preventDefault();
+            busy[1](true);
+            ST.rpc('saveSettings', { skipGraceSeconds: Math.round(Number(f.grace) * 60), defaultOfflinePolicy: f.offline, defaultOfflineWindow: Math.round(Number(f.windowN) * f.windowUnit), defaultAnchor: f.anchor })
+            .then(function (saved) { busy[1](false); ST.ui.toast('Settings saved.'); props.onSaved(saved); }, function (ex) { busy[1](false); err[1](ex.message); });
+        };
+        return html`<${ST.Modal} title="ScriptTask settings" onClose=${props.onClose} footer=${html`
+            <button type="button" class="btn btn-secondary" onClick=${props.onClose}>Cancel</button>
+            <button type="submit" form="st-settings" class="btn btn-primary" disabled=${busy[0]}>Save</button>`}>
+            <form id="st-settings" onSubmit=${submit}>
+                <div class="mb-3">
+                    <label class="form-label" for="st-grace">Skip grace period</label>
+                    <div class="input-group w-auto"><input type="number" min="1" max="60" step="1" class="form-control" id="st-grace" value=${f.grace} onInput=${function (e) { set('grace', e.target.value); }} /><span class="input-group-text">minutes</span></div>
+                    <div class="form-text">Schedules set to Skip still run if their device comes online this long after the scheduled time. It applies to all schedules.</div>
+                </div>
+                <div class="st-section-title">Defaults for new schedules</div>
+                <div class="row g-3">
+                    <div class="col-12">
+                        <label class="form-label" for="st-def-offline">If the device is offline</label>
+                        <select id="st-def-offline" class="form-select" value=${f.offline} onChange=${function (e) { set('offline', e.target.value); }}>
+                            <option value="wait">Run when it reconnects</option><option value="window">Run if it reconnects within…</option><option value="skip">Skip</option>
+                        </select>
+                        ${f.offline == 'window' ? html`<div class="input-group mt-2">
+                            <input type="number" min="1" step="1" class="form-control" aria-label="Window length" value=${f.windowN} onInput=${function (e) { set('windowN', e.target.value); }} />
+                            <select class="form-select" aria-label="Window unit" value=${f.windowUnit} onChange=${function (e) { set('windowUnit', Number(e.target.value)); }}>${SPAN_UNITS.map(function (u) { return html`<option value=${u[0]}>${u[1]}</option>`; })}</select>
+                        </div>` : null}
+                    </div>
+                    <div class="col-12">
+                        <label class="form-label" for="st-def-anchor">If a run happens late</label>
+                        <select id="st-def-anchor" class="form-select" value=${f.anchor} onChange=${function (e) { set('anchor', e.target.value); }}>
+                            <option value="slot">Keep the original schedule</option><option value="actual">Shift to the actual run time</option>
+                        </select>
+                    </div>
+                </div>
                 ${err[0] ? html`<div class="alert alert-danger py-2 mt-3 mb-0">${err[0]}</div>` : null}
             </form>
         </${ST.Modal}>`;

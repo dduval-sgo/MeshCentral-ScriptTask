@@ -96,10 +96,11 @@ module.exports.scripttask = function (parent) {
     // ---- Queue ----
 
     obj.queueRun = async function() {
+        try { await obj.expireJobs(); } catch (e) { console.log('PLUGIN: ScriptTask: Could not expire jobs: ', e); }
         var onlineAgents = Object.keys(obj.meshServer.webserver.wsagents);
         //obj.debug('ScriptTask', 'Queue Running', Date().toLocaleString(), 'Online agents: ', onlineAgents);
 
-        obj.db.getPendingJobs(onlineAgents)
+        return obj.db.getPendingJobs(onlineAgents)
         .then((jobs) => {
             if (jobs.length == 0) return;
             //@TODO check for a large number and use taskLimiter to queue the jobs
@@ -164,8 +165,8 @@ module.exports.scripttask = function (parent) {
             });
         })
         .then(() => {
-            obj.makeJobsFromSchedules();
             obj.cleanHistory();
+            return obj.ensureScheduleJobs().catch(e => console.log('PLUGIN: ScriptTask: Error managing job schedules: ', e));
         })
         .catch(e => { console.log('PLUGIN: ScriptTask: Queue Run Error: ', e); });
     };
@@ -209,168 +210,85 @@ module.exports.scripttask = function (parent) {
     };
 
     // ---- Scheduling ----
+    // Every active schedule has exactly one incomplete job: the run for its next slot. When that job finishes,
+    // expires under the schedule's offline policy, or is cancelled, the next job is created for the first slot after it.
+    // Slots that passed while a device was offline are never run as a backlog.
 
-    obj.determineNextJobTime = function(s) {
-        var nextTime = null;
-        var nowTime = Math.floor(new Date() / 1000);
-
-        // special case: we've reached the end of our run
-        if (s.endAt !== null && s.endAt <= nowTime) {
-            return nextTime;
-        }
-
-        switch (s.recur) {
-            case 'once':
-                if (s.nextRun == null) nextTime = s.startAt;
-                else nextTime = null;
-            break;
-            case 'minutes':
-                /*var lRun = s.nextRun || nowTime;
-                if (lRun == null) lRun = nowTime;
-                nextTime = lRun + (s.interval * 60);
-                if (s.startAt > nextTime) nextTime = s.startAt;*/
-                if (s.nextRun == null) { // hasn't run yet, set to start time
-                    nextTime = s.startAt;
-                    break;
-                }
-                nextTime = s.nextRun + (s.interval * 60);
-                // this prevents "catch-up" tasks being scheduled if an endpoint is offline for a long period of time
-                // e.g. always make sure the next scheduled time is relevant to the scheduled interval, but in the future
-                if (nextTime < nowTime) {
-                    // initially I was worried about this causing event loop lockups
-                    // if there was a long enough time gap. Testing over 50 years of backlog for a 3 min interval
-                    // still ran under a fraction of a second. Safe to say this approach is safe! (~8.5 million times)
-                    while (nextTime < nowTime) {
-                        nextTime = nextTime + (s.interval * 60);
-                    }
-                }
-                if (s.startAt > nextTime) nextTime = s.startAt;
-            break;
-            case 'hourly':
-                if (s.nextRun == null) { // hasn't run yet, set to start time
-                    nextTime = s.startAt;
-                    break;
-                }
-                nextTime = s.nextRun + (s.interval * 60 * 60);
-                if (nextTime < nowTime) {
-                    while (nextTime < nowTime) {
-                        nextTime = nextTime + (s.interval * 60 * 60);
-                    }
-                }
-                if (s.startAt > nextTime) nextTime = s.startAt;
-            break;
-            case 'daily':
-                if (s.nextRun == null) { // hasn't run yet, set to start time
-                    nextTime = s.startAt;
-                    break;
-                }
-                nextTime = s.nextRun + (s.interval * 60 * 60 * 24);
-                if (nextTime < nowTime) {
-                    while (nextTime < nowTime) {
-                        nextTime = nextTime + (s.interval * 60 * 60 * 24);
-                    }
-                }
-                if (s.startAt > nextTime) nextTime = s.startAt;
-            break;
-            case 'weekly':
-                var tempDate = new Date();
-                var nowDate = new Date(tempDate.getFullYear(), tempDate.getMonth(), tempDate.getDate());
-
-                if (s.daysOfWeek.length == 0) {
-                    nextTime = null;
-                    break;
-                }
-                s.daysOfWeek = s.daysOfWeek.map(el => Number(el));
-                var baseTime = s.startAt;
-                //console.log('dow is ', s.daysOfWeek);
-                var lastDayOfWeek = Math.max(...s.daysOfWeek);
-                var startX = 0;
-                //console.log('ldow is ', lastDayOfWeek);
-                if (s.nextRun != null) {
-                    baseTime = s.nextRun;
-                    //console.log('basetime 2: ', baseTime);
-                    if (nowDate.getDay() == lastDayOfWeek) {
-                        baseTime = baseTime + ( s.interval * 604800 ) - (lastDayOfWeek * 86400);
-                        //console.log('basetime 3: ', baseTime);
-                    }
-                    startX = 0;
-                } else if (s.startAt < nowTime) {
-                    baseTime = Math.floor(nowDate.getTime() / 1000);
-                    //console.log('basetime 4: ', baseTime);
-                }
-                //console.log('startX is: ', startX);
-                //var secondsFromMidnight = nowTimeDate.getSeconds() + (nowTimeDate.getMinutes() * 60) + (nowTimeDate.getHours() * 60 * 60);
-                //console.log('seconds from midnight: ', secondsFromMidnight);
-                //var dBaseTime = new Date(0); dBaseTime.setUTCSeconds(baseTime);
-                //var dMidnight = new Date(dBaseTime.getFullYear(), dBaseTime.getMonth(), dBaseTime.getDate());
-                //baseTime = Math.floor(dMidnight.getTime() / 1000);
-                for (var x = startX; x <= 7; x++){
-                    var checkDate = baseTime + (86400 * x);
-                    var d = new Date(0); d.setUTCSeconds(checkDate);
-                    var dm = new Date(d.getFullYear(), d.getMonth(), d.getDate());
-
-                    console.log('testing date: ', dm.toLocaleString()); // dMidnight.toLocaleString());
-                    //console.log('if break check :', (s.daysOfWeek.indexOf(d.getDay()) !== -1 && checkDate >= nowTime));
-                    //console.log('checkDate vs nowTime: ', (checkDate - nowTime), ' if positive, nowTime is less than checkDate');
-                    if (s.nextRun == null && s.daysOfWeek.indexOf(dm.getDay()) !== -1 && dm.getTime() >= nowDate.getTime()) break;
-                    if (s.daysOfWeek.indexOf(dm.getDay()) !== -1 && dm.getTime() > nowDate.getTime()) break;
-                    //if (s.daysOfWeek.indexOf(d.getDay()) !== -1 && Math.floor(d.getTime() / 1000) >= nowTime) break;
-                }
-                var sa = new Date(0); sa.setUTCSeconds(s.startAt);
-                var sad = new Date(sa.getFullYear(), sa.getMonth(), sa.getDate());
-                var diff = (sa.getTime() - sad.getTime()) / 1000;
-                nextTime = Math.floor(dm.getTime() / 1000) + diff;
-                //console.log('next schedule is ' + d.toLocaleString());
-            break;
-            default:
-                nextTime = null;
-            break;
-        }
-
-        if (s.endAt != null && nextTime > s.endAt) nextTime = null; // if the next time reaches the bound of the endAt time, nullify
-
-        return nextTime;
+    obj.Schedule = require(__dirname + '/schedule.js');
+    obj.SETTINGS_DEFAULTS = { skipGraceSeconds: 120, defaultOfflinePolicy: 'wait', defaultOfflineWindow: 7200, defaultAnchor: 'slot' };
+    obj.settingsCache = null;
+    obj.getSettings = function() {
+        if (obj.settingsCache != null) return Promise.resolve(obj.settingsCache);
+        return obj.db.getSettings().then(function(saved) {
+            var s = Object.assign({}, obj.SETTINGS_DEFAULTS);
+            Object.keys(obj.SETTINGS_DEFAULTS).forEach(function(k) { if (saved[k] != null) s[k] = saved[k]; });
+            obj.settingsCache = s;
+            return s;
+        });
     };
 
-    obj.makeJobsFromSchedules = function(scheduleId) {
-        //obj.debug('ScriptTask', 'makeJobsFromSchedules starting');
-        return obj.db.getSchedulesDueForJob(scheduleId)
-        .then(schedules => {
-            //obj.debug('ScriptTask', 'Found ' + schedules.length + ' schedules to process. Current time is: ' + Math.floor(new Date() / 1000));
-            if (schedules.length) {
-                schedules.forEach(s => {
-                    var nextJobTime = obj.determineNextJobTime(s);
-                    var nextJobScheduled = false;
-                    if (nextJobTime === null) {
-                        //obj.debug('ScriptTask', 'Removing Job Schedule for', JSON.stringify(s));
-                        obj.db.removeJobSchedule(s._id)
-                        .then(() => { obj.invalidate({ nodeIds: [s.node], scriptIds: [s.scriptId] }); });
-                    } else {
-                        //obj.debug('ScriptTask', 'Scheduling Job for', JSON.stringify(s));
-                        obj.db.get(s.scriptId)
-                        .then(scripts => {
-                            // if a script is scheduled to run, but a previous run hasn't completed,
-                            // don't schedule another job for the same (device probably offline).
-                            // results in the minimum jobs running once an agent comes back online.
-                            return obj.db.getIncompleteJobsForSchedule(s._id)
-                            .then((jobs) => {
-                                if (jobs.length > 0) { /* obj.debug('Plugin', 'ScriptTask', 'Skipping job creation'); */ return Promise.resolve(); }
-                                else { /* obj.debug('Plugin', 'ScriptTask', 'Creating new job'); */ nextJobScheduled = true; return obj.db.addJob( { scriptId: s.scriptId, scriptName: scripts[0].name, node: s.node, runBy: s.scheduledBy, runById: s.scheduledById || null, dontQueueUntil: nextJobTime, jobSchedule: s._id } ); }
-                            });
-                        })
-                        .then(() => {
+    // Run schedule changes one at a time, so the queue tick and a finishing job can't both create a schedule's next job
+    var scheduleChain = Promise.resolve();
+    obj.serial = function(fn) {
+        var p = scheduleChain.then(fn);
+        scheduleChain = p.catch(function() { });
+        return p;
+    };
 
-                            if (nextJobScheduled) { /* obj.debug('Plugin', 'ScriptTask', 'Updating nextRun time'); */ return obj.db.update(s._id, { nextRun: nextJobTime }); }
-                            else { /* obj.debug('Plugin', 'ScriptTask', 'NOT updating nextRun time'); */ return Promise.resolve(); }
-                        })
-                        .then(() => {
-                            if (nextJobScheduled) obj.invalidate({ nodeIds: [s.node], scriptIds: [s.scriptId] });
-                        })
-                        .catch((e) => { console.log('PLUGIN: ScriptTask: Error managing job schedules: ', e); });
-                    }
-                });
+    // Record that a job's slot is over (it ran, was missed or was cancelled), so the schedule's next job comes after it
+    obj.closeSlot = function(scheduleId, job, extra) {
+        if (scheduleId == null) return Promise.resolve();
+        var slot = (job.slot != null) ? job.slot : job.dontQueueUntil;
+        return obj.db.update(scheduleId, Object.assign({ lastSlot: slot }, extra || {}));
+    };
+
+    // Give every active schedule (or just one) that has no incomplete job a job for its next slot
+    obj.ensureScheduleJobs = function(scheduleId) {
+        return obj.serial(async function() {
+            var settings = await obj.getSettings();
+            var schedules = await obj.db.getActiveSchedules(scheduleId);
+            if (schedules.length == 0) return;
+            var busy = await obj.db.getScheduleIdsWithIncompleteJobs();
+            var now = Math.floor(Date.now() / 1000);
+            for (var s of schedules) {
+                if (busy.indexOf(String(s._id)) >= 0) continue;
+                // Schedules from before this version only have nextRun, the slot of their last job
+                var last = (s.lastSlot != null) ? s.lastSlot : s.nextRun;
+                // A new schedule starts at its start time, with a few minutes' grace. Otherwise: the first slot after the last one, and not in the past.
+                var from = (last != null) ? Math.max(last + 1, now) : Math.max(s.startAt, now - 300);
+                var slot = obj.Schedule.nextSlot(s, from);
+                if (slot == null) {
+                    // Finished: a one-time run is done, or the end time has passed
+                    await obj.db.removeJobSchedule(s._id);
+                    obj.invalidate({ nodeIds: [s.node], scriptIds: [s.scriptId] });
+                    continue;
+                }
+                var scripts = await obj.db.get(s.scriptId);
+                if (scripts.length == 0) continue;
+                await obj.db.addJob({ scriptId: s.scriptId, scriptName: scripts[0].name, node: s.node, runBy: s.scheduledBy, runById: s.scheduledById || null, dontQueueUntil: slot, slot: slot, expiresAt: obj.Schedule.expiresAt(s, slot, settings.skipGraceSeconds), jobSchedule: s._id });
+                await obj.db.update(s._id, { nextRun: slot });
+                obj.invalidate({ nodeIds: [s.node], scriptIds: [s.scriptId] });
             }
         });
+    };
+
+    // Close jobs that were never sent before their offline policy ran out. They show as Missed in history.
+    obj.expireJobs = async function() {
+        var now = Math.floor(Date.now() / 1000);
+        var jobs = await obj.db.getExpiredJobs(now);
+        for (var j of jobs) {
+            await obj.db.update(j._id, { completeTime: now, missed: true });
+            await obj.closeSlot(j.jobSchedule, j);
+            obj.invalidate({ nodeIds: [j.node], scriptIds: [j.scriptId] });
+        }
+        return jobs.length;
+    };
+
+    // Start a device's due jobs as soon as it connects, instead of at the next minute's queue check
+    obj.hook_agentCoreIsStable = function(agent) {
+        clearTimeout(obj.connectTimer);
+        obj.connectTimer = setTimeout(obj.queueRun, 3000); // One queue run for a burst of reconnecting devices
+        if (agent && typeof agent.dbNodeKey == 'string') obj.invalidate({ nodeIds: [agent.dbNodeKey] });
     };
 
     // ---- Change notices ----
@@ -478,6 +396,16 @@ module.exports.scripttask = function (parent) {
             sched.daysOfWeek = sj.daysOfWeek.map(Number).filter(function(d) { return d >= 0 && d <= 6; }).map(String);
             if (sched.daysOfWeek.length == 0) throw new RpcError('Choose at least one day.');
         }
+        if (sj.recur == 'once' && sched.startAt < Math.floor(Date.now() / 1000) - 300) throw new RpcError('Choose a time in the future.');
+        sched.offlinePolicy = (['wait', 'window', 'skip'].indexOf(sj.offlinePolicy) >= 0) ? sj.offlinePolicy : 'wait';
+        sched.offlineWindow = null;
+        if (sched.offlinePolicy == 'window') {
+            sched.offlineWindow = Math.floor(Number(sj.offlineWindow));
+            if (!(sched.offlineWindow >= 60 && sched.offlineWindow <= 30 * 86400)) throw new RpcError('The window must be between 1 minute and 30 days.');
+        }
+        // Shifting to the actual run time only makes sense for evenly repeating schedules
+        sched.anchor = (sj.anchor == 'actual' && ['minutes', 'hourly', 'daily'].indexOf(sj.recur) >= 0) ? 'actual' : 'slot';
+        sched.timezone = obj.Schedule.isValidZone(sj.timezone) ? sj.timezone : null;
         return sched;
     }
 
@@ -490,7 +418,8 @@ module.exports.scripttask = function (parent) {
             version: obj.version,
             user: { id: session.user._id, name: session.user.name },
             caps: { manage: obj.hasPerm(session.user, 'manage'), run: caps.run, remoteCommand: caps.remoteCommand === true, visible: caps.node != null },
-            node: (caps.node == null) ? null : { id: caps.node._id, online: obj.meshServer.webserver.wsagents[caps.node._id] != null }
+            node: (caps.node == null) ? null : { id: caps.node._id, online: obj.meshServer.webserver.wsagents[caps.node._id] != null },
+            settings: await obj.getSettings()
         };
     };
 
@@ -539,13 +468,11 @@ module.exports.scripttask = function (parent) {
         for (var nodeId of nodeIds) {
             var caps = await obj.getNodeCaps(session, nodeId);
             if (!caps.run) { refused.push(nodeId); continue; }
-            await obj.db.addJobSchedule(Object.assign({ scriptId: script._id, node: nodeId, scheduledBy: session.user.name, scheduledById: session.user._id, lastRun: null, nextRun: null }, sched));
+            var r = await obj.db.addJobSchedule(Object.assign({ scriptId: script._id, node: nodeId, scheduledBy: session.user.name, scheduledById: session.user._id, lastRun: null, nextRun: null, lastSlot: null, anchorAt: null, paused: false }, sched));
+            await obj.ensureScheduleJobs(r.insertedId);
             accepted.push(nodeId);
         }
-        if (accepted.length) {
-            await obj.makeJobsFromSchedules();
-            obj.invalidate({ nodeIds: accepted, scriptIds: [script._id] });
-        }
+        if (accepted.length) obj.invalidate({ nodeIds: accepted, scriptIds: [script._id] });
         return { accepted: accepted.length, refused: refused };
     };
 
@@ -560,6 +487,8 @@ module.exports.scripttask = function (parent) {
             // Already sent to the device. Close it here; a late result from the agent is still recorded.
             await obj.db.update(job._id, { completeTime: Math.floor(new Date() / 1000), cancelled: true, errorVal: 'Cancelled by ' + session.user.name + ' after it was sent to the device.' });
         }
+        // Cancelling a schedule's run skips that occurrence; the schedule carries on with its next one
+        if (job.jobSchedule != null) { await obj.closeSlot(job.jobSchedule, job); await obj.ensureScheduleJobs(job.jobSchedule); }
         obj.invalidate({ nodeIds: [job.node], scriptIds: [job.scriptId] });
         return true;
     };
@@ -567,9 +496,15 @@ module.exports.scripttask = function (parent) {
     obj.rpc.cancelAllPending = async function(args, session) {
         obj.requireManage(session);
         var node = await obj.requireNode(session, args.nodeId);
-        await obj.db.deletePendingJobsForNode(node._id);
+        var jobs = await obj.db.getIncompleteJobsForNode(node._id), schedules = [];
+        for (var job of jobs) {
+            if (job.dispatchTime == null) await obj.db.delete(job._id);
+            else await obj.db.update(job._id, { completeTime: Math.floor(new Date() / 1000), cancelled: true, errorVal: 'Cancelled by ' + session.user.name + ' after it was sent to the device.' });
+            if (job.jobSchedule != null) { await obj.closeSlot(job.jobSchedule, job); schedules.push(job.jobSchedule); }
+        }
+        for (var sid of schedules) await obj.ensureScheduleJobs(sid);
         obj.invalidate({ nodeIds: [node._id] });
-        return true;
+        return jobs.length;
     };
 
     obj.rpc.deleteSchedule = async function(args, session) {
@@ -580,6 +515,52 @@ module.exports.scripttask = function (parent) {
         await obj.db.delete(sched._id);
         obj.invalidate({ nodeIds: [sched.node], scriptIds: [sched.scriptId] });
         return true;
+    };
+
+    obj.rpc.updateSchedule = async function(args, session) {
+        var existing = await getOne(args.scheduleId, 'jobSchedule');
+        await obj.requireNode(session, existing.node);
+        obj.requireOwnerOrManage(session, existing.scheduledById);
+        var sched = cleanSchedule(args.schedule);
+        await obj.db.deleteUndispatchedJobsForSchedule(existing._id);
+        // Start afresh from now: no run for a slot that has already passed
+        await obj.db.update(existing._id, Object.assign(sched, { lastSlot: Math.floor(Date.now() / 1000), nextRun: null, anchorAt: null }));
+        await obj.ensureScheduleJobs(existing._id);
+        obj.invalidate({ nodeIds: [existing.node], scriptIds: [existing.scriptId] });
+        return true;
+    };
+
+    obj.rpc.pauseSchedule = async function(args, session) {
+        var existing = await getOne(args.scheduleId, 'jobSchedule');
+        await obj.requireNode(session, existing.node);
+        obj.requireOwnerOrManage(session, existing.scheduledById);
+        if (args.paused === true) {
+            await obj.db.deleteUndispatchedJobsForSchedule(existing._id);
+            await obj.db.update(existing._id, { paused: true, nextRun: null });
+        } else {
+            // Resume with the next slot from now; slots that passed while paused are skipped
+            await obj.db.update(existing._id, { paused: false, lastSlot: Math.floor(Date.now() / 1000) });
+            await obj.ensureScheduleJobs(existing._id);
+        }
+        obj.invalidate({ nodeIds: [existing.node], scriptIds: [existing.scriptId] });
+        return true;
+    };
+
+    // -- Settings (managers) --
+
+    obj.rpc.saveSettings = async function(args, session) {
+        obj.requireManage(session);
+        var s = {
+            skipGraceSeconds: Math.floor(Number(args.skipGraceSeconds)),
+            defaultOfflinePolicy: (['wait', 'window', 'skip'].indexOf(args.defaultOfflinePolicy) >= 0) ? args.defaultOfflinePolicy : 'wait',
+            defaultOfflineWindow: Math.floor(Number(args.defaultOfflineWindow)),
+            defaultAnchor: (args.defaultAnchor == 'actual') ? 'actual' : 'slot'
+        };
+        if (!(s.skipGraceSeconds >= 60 && s.skipGraceSeconds <= 3600)) throw new RpcError('The Skip grace period must be between 1 and 60 minutes.');
+        if (!(s.defaultOfflineWindow >= 60 && s.defaultOfflineWindow <= 30 * 86400)) throw new RpcError('The default window must be between 1 minute and 30 days.');
+        await obj.db.saveSettings(s);
+        obj.settingsCache = null;
+        return obj.getSettings();
     };
 
     // -- Library (managers) --
@@ -766,10 +747,14 @@ module.exports.scripttask = function (parent) {
                     if (job.cancelled) { update.completeTime = job.completeTime; update.errorVal = job.errorVal; update.lateReturnVal = retVal; update.lateErrorVal = errVal; delete update.returnVal; }
                     return obj.db.update(jobId, update)
                     .then(() => {
-                        if (job.jobSchedule == null) return;
-                        return obj.db.update(job.jobSchedule, { lastRun: completeTime } )
-                        .then(() => {
-                            obj.makeJobsFromSchedules(job.jobSchedule);
+                        if (job.jobSchedule == null || job.cancelled) return; // A cancelled run's slot was closed when it was cancelled
+                        return obj.db.get(job.jobSchedule)
+                        .then((found) => {
+                            if (found.length == 0) return;
+                            var extra = { lastRun: completeTime };
+                            if (found[0].anchor == 'actual') extra.anchorAt = job.dispatchTime || dispatchTime; // Late runs move the schedule to when this run actually started
+                            return obj.closeSlot(job.jobSchedule, job, extra)
+                            .then(() => obj.ensureScheduleJobs(job.jobSchedule));
                         });
                     })
                     .then(() => {

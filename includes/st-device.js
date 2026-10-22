@@ -291,7 +291,8 @@
     function QueueCard(props) {
         var d = props.data, a = props.actions, user = props.user;
         var canChange = function (ownerId) { return props.manage || (ownerId != null && ownerId == user.id); };
-        var schedules = d.schedules.slice().sort(function (x, y) { return ((x.nextRun == null) - (y.nextRun == null)) || ((x.nextRun || 0) - (y.nextRun || 0)); });
+        // Soonest first; paused and finished schedules last
+        var schedules = d.schedules.slice().sort(function (x, y) { return ((x.paused === true) - (y.paused === true)) || ((x.nextRun == null) - (y.nextRun == null)) || ((x.nextRun || 0) - (y.nextRun || 0)); });
         var qLimit = useState(10), sLimit = useState(10);
         var more = function (total, limit) {
             if (total <= limit[0]) return null;
@@ -310,7 +311,8 @@
                     <tbody>${d.queue.slice(0, qLimit[0]).map(function (j) { return html`<tr key=${j._id}>
                         <td>${j.scriptName}</td>
                         <td><${ST.StatusBadge} status=${ST.jobStatus(j, d.online)} /></td>
-                        <td class="text-nowrap">${(j.dontQueueUntil != null && j.dontQueueUntil > ST.now()) ? html`Due <${ST.Time} t=${j.dontQueueUntil} />` : html`Queued <${ST.Time} t=${j.queueTime} />`}</td>
+                        <td class="text-nowrap">${(j.dontQueueUntil != null && j.dontQueueUntil > ST.now()) ? html`Due <${ST.Time} t=${j.dontQueueUntil} />` : html`Queued <${ST.Time} t=${j.queueTime} />`}
+                            ${(j.expiresAt != null && j.dispatchTime == null && j.expiresAt > ST.now()) ? html`<div class="text-body-secondary small">Skipped if not sent by ${ST.fmt.time(j.expiresAt)}</div>` : null}</td>
                         <td>${j.runBy}${j.jobSchedule ? html` <span class="text-body-secondary small">(schedule)</span>` : null}</td>
                         <td class="st-col-actions">${canChange(j.runById) ? html`<button class="btn btn-sm btn-outline-danger" title="Cancel this run" onClick=${function () { a.cancelJob(j); }}><${ST.Icon} name="x-lg" /><span class="visually-hidden">Cancel</span></button>` : null}</td>
                     </tr>`; })}</tbody>
@@ -321,11 +323,16 @@
                     <thead><tr><th>Script</th><th>Repeat</th><th>Next run</th><th>Last run</th><th>Created by</th><th class="st-col-actions"><span class="visually-hidden">Actions</span></th></tr></thead>
                     <tbody>${schedules.slice(0, sLimit[0]).map(function (s) { return html`<tr key=${s._id}>
                         <td>${props.scriptName(s.scriptId)}</td>
-                        <td>${ST.fmt.recurrence(s)}${s.endAt ? html`<div class="text-body-secondary small">until ${ST.fmt.time(s.endAt)}</div>` : null}</td>
-                        <td><${ST.Time} t=${s.nextRun} empty="Not scheduled" /></td>
+                        <td>${ST.fmt.recurrence(s)}${ST.fmt.zoneNote(s) ? ' (' + ST.fmt.zoneNote(s) + ')' : ''}
+                            <div class="text-body-secondary small">${ST.fmt.policy(s)}${s.endAt ? ', until ' + ST.fmt.time(s.endAt) : ''}</div></td>
+                        <td>${s.paused ? html`<${ST.StatusBadge} status="paused" />` : html`<${ST.Time} t=${s.nextRun} empty="Not scheduled" />`}</td>
                         <td><${ST.Time} t=${s.lastRun} empty="Never" /></td>
                         <td>${s.scheduledBy}</td>
-                        <td class="st-col-actions">${canChange(s.scheduledById) ? html`<button class="btn btn-sm btn-outline-danger" title="Delete this schedule" onClick=${function () { a.deleteSchedule(s); }}><${ST.Icon} name="trash3" /><span class="visually-hidden">Delete</span></button>` : null}</td>
+                        <td class="st-col-actions">${canChange(s.scheduledById) ? html`<div class="btn-group btn-group-sm" role="group" aria-label="Schedule actions">
+                            <button class="btn st-btn-quiet" title="Edit this schedule" onClick=${function () { a.editSchedule(s); }}><${ST.Icon} name="pencil" /><span class="visually-hidden">Edit</span></button>
+                            <button class="btn st-btn-quiet" title=${s.paused ? 'Resume this schedule' : 'Pause this schedule'} onClick=${function () { a.pauseSchedule(s, !s.paused); }}><${ST.Icon} name=${s.paused ? 'play-fill' : 'pause-fill'} /><span class="visually-hidden">${s.paused ? 'Resume' : 'Pause'}</span></button>
+                            <button class="btn btn-outline-danger" title="Delete this schedule" onClick=${function () { a.deleteSchedule(s); }}><${ST.Icon} name="trash3" /><span class="visually-hidden">Delete</span></button>
+                        </div>` : null}</td>
                     </tr>`; })}</tbody>
                 </table>${more(schedules.length, sLimit)}</div>`}
             </div>
@@ -495,7 +502,7 @@
             },
             schedule: function (item, nodeIds) {
                 var many = nodeIds != null;
-                setDialog(html`<${ST.dialogs.Schedule} title=${'Schedule ' + item.name} subtitle=${many ? 'On ' + nodeIds.length + ' devices' : 'On ' + node.name} onClose=${close} onSubmit=${function (sc) {
+                setDialog(html`<${ST.dialogs.Schedule} title=${'Schedule ' + item.name} subtitle=${many ? 'On ' + nodeIds.length + ' devices' : 'On ' + node.name} settings=${state.init.settings} onClose=${close} onSubmit=${function (sc) {
                     return ST.rpc('addSchedule', { scriptId: item._id, nodeIds: many ? nodeIds : [node._id], schedule: sc }).then(function (r) {
                         close();
                         ST.ui.toast('Scheduled on ' + r.accepted + ' device' + (r.accepted == 1 ? '' : 's') + (r.refused.length ? '. Skipped ' + r.refused.length + ' you can\'t run scripts on.' : '.'));
@@ -521,6 +528,19 @@
             cancelAll: function () {
                 ST.ui.confirm({ title: 'Cancel all pending runs?', body: html`<p class="mb-0">All ${state.data.queue.length} pending runs on ${node.name} will be cancelled. Schedules stay, and create their next run as usual.</p>`, confirmText: 'Cancel all', danger: true })
                 .then(function (ok) { if (ok) ST.ui.attempt(ST.rpc('cancelAllPending', { nodeId: node._id }), 'Pending runs cancelled.'); });
+            },
+            editSchedule: function (s) {
+                setDialog(html`<${ST.dialogs.Schedule} title=${'Edit schedule: ' + scriptName(s.scriptId)} subtitle=${'On ' + node.name + '. Saving restarts the schedule from now; its pending run is replaced.'} schedule=${s} settings=${state.init.settings} onClose=${close} onSubmit=${function (sc) {
+                    return ST.rpc('updateSchedule', { scheduleId: s._id, schedule: sc }).then(function () { close(); ST.ui.toast('Schedule saved.'); });
+                }} />`);
+            },
+            pauseSchedule: function (s, paused) {
+                ST.ui.attempt(ST.rpc('pauseSchedule', { scheduleId: s._id, paused: paused }), paused ? 'Schedule paused. Its pending run was removed.' : 'Schedule resumed from its next run.');
+            },
+            openSettings: function () {
+                ST.rpc('init', { nodeId: node._id }).then(function (fresh) {
+                    setDialog(html`<${ST.dialogs.Settings} settings=${fresh.settings} onClose=${close} onSaved=${function (saved) { patch({ init: Object.assign({}, state.init, { settings: saved }) }); close(); }} />`);
+                }, function (e) { ST.ui.toast(e.message, 'error'); });
             },
             deleteSchedule: function (s) {
                 ST.ui.confirm({ title: 'Delete this schedule?', body: html`<p class="mb-0">${scriptName(s.scriptId)} (${ST.fmt.recurrence(s).toLowerCase()}) will stop running on ${node.name}. Its pending run is cancelled too.</p>`, confirmText: 'Delete schedule', danger: true })
@@ -614,7 +634,8 @@
                         onRunAgain=${function (j) { var sc = state.items.find(function (i) { return i._id == j.scriptId; }); if (sc) actions.runNow(sc); }} /></div>
                 </div>`) : null}
             ${manage ? html`
-                <div class="st-group-title"><${ST.Icon} name="lock" class="me-1" />Manager tools<span class="fw-normal"> · only ScriptTask managers see these. They move to the ScriptTask server page in a later release.</span></div>
+                <div class="st-group-title d-flex align-items-center gap-2"><span><${ST.Icon} name="lock" class="me-1" />Manager tools<span class="fw-normal"> · only ScriptTask managers see these. They move to the ScriptTask server page in a later release.</span></span>
+                    <button class="btn btn-sm st-btn-quiet ms-auto" onClick=${actions.openSettings}><${ST.Icon} name="gear" class="me-1" />Settings</button></div>
                 <div class="row g-3">
                     <div class="col-xl-5">
                         <${Library} items=${state.items} selId=${selId} onSelect=${select} collapsed=${collapsed} onToggle=${toggleFolder} manage=${manage} actions=${actions}
