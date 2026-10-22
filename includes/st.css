@@ -102,3 +102,25 @@ textarea.form-control.st-code { font-family: var(--st-mono); font-size: .85rem; 
 .st-picker .list-group-item:first-child { border-top: 0; }
 
 .st-classic-notice { max-width: 40rem; margin: 2rem auto; }
+
+/* Script picker (combobox) */
+.st-combo { position: relative; }
+.st-combo-menu { position: absolute; z-index: 1050; left: 0; right: 0; top: 100%; margin: .25rem 0 0; padding: 0; list-style: none; max-height: 20rem; overflow-y: auto;
+    background: var(--bs-body-bg); border: 1px solid var(--bs-border-color); border-radius: var(--bs-border-radius); box-shadow: var(--bs-box-shadow); }
+.st-combo-group { font-size: .72rem; font-weight: 600; text-transform: uppercase; letter-spacing: .03em; color: var(--bs-secondary-color); background: var(--bs-tertiary-bg); padding: .35rem .75rem; position: sticky; top: 0; z-index: 1; }
+.st-combo-option { display: flex; align-items: center; gap: .5rem; padding: .35rem .75rem .35rem .4rem; cursor: pointer; }
+.st-combo-option:hover, .st-combo-option.active { background: var(--st-row-hover); }
+.st-combo-option.st-current { background: var(--st-selected-bg); color: var(--st-selected-fg); }
+.st-combo-option.st-disabled { cursor: not-allowed; color: var(--bs-tertiary-color); }
+.st-combo-name { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.st-combo-reason { font-size: .75rem; margin-left: .5rem; }
+.st-combo-empty { padding: .75rem; color: var(--bs-secondary-color); text-align: center; }
+.st-fav-btn { border: 0; background: none; padding: .1rem .25rem; color: var(--bs-tertiary-color); line-height: 1; border-radius: var(--bs-border-radius-sm); }
+.st-fav-btn:hover { color: var(--bs-warning); }
+.st-fav-btn.on { color: var(--bs-warning); }
+.st-chosen { margin-top: .75rem; }
+.st-chosen .st-script-path { margin-left: .25rem; }
+
+/* Manager-only section */
+.st-group-title { font-size: .85rem; font-weight: 600; color: var(--bs-secondary-color); margin: 1.5rem 0 .75rem; padding-top: .75rem; border-top: 1px dashed var(--bs-border-color); }
+.st-lib-actions .st-script-head { font-size: .9rem; }

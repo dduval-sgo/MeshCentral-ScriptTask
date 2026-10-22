@@ -8,7 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 ### Changed
-- Device tab rebuilt with Bootstrap and Preact. It follows the MeshCentral Modern UI's theme and light/dark mode, including live switching. Classic UI is no longer supported.
+- Device tab rebuilt with Bootstrap and Preact, in a single column: run a script, queue, history, then manager tools (library and variables) for ScriptTask managers. It follows the MeshCentral Modern UI's theme and light/dark mode, including live switching. Classic UI is no longer supported.
 - Script editor and scheduler open as dialogs in the tab instead of popup windows. The editor indents with Tab/Shift+Tab and saves with Ctrl+S. The scheduler uses the browser's date and time inputs.
 - Pages talk to the server through targeted request/reply messages. Changes are announced with small notices, sent only to users who can see the affected device, instead of broadcasting history, output and variable values.
 - Requires MeshCentral 1.2.0 or later. Update URLs point to this fork.
@@ -17,6 +17,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - Plugin permissions: "Manage ScriptTask" (library, variables, multi-device runs; denied by default) and "Run scripts" (allowed by default). Running on a device also needs its Remote Commands right.
 - Cancel individual pending runs. Users can cancel their own runs and delete their own schedules; managers can act on any.
 - Output viewer with formatted JSON, line wrap, copy and download.
+- Device tab: searchable script picker with per-user favourites. Scripts that can't run on the device's OS are listed but can't be chosen, with the reason shown.
+- Run again from any history row.
+- Long queues and schedule lists show the first 10 rows, with Show more.
 - Server tests (`node --test test/*.test.js`).
 
 ### Fixed
