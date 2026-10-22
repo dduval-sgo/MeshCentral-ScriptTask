@@ -6,6 +6,29 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 ## [Known Issues]
 - None. Please feel free to submit an issue via [GitHub](https://github.com/ryanblenis/MeshCentral-ScriptTask) if you find anything.
 
+## [Unreleased]
+### Changed
+- Device tab rebuilt with Bootstrap and Preact. It follows the MeshCentral Modern UI's theme and light/dark mode, including live switching. Classic UI is no longer supported.
+- Script editor and scheduler open as dialogs in the tab instead of popup windows. The editor indents with Tab/Shift+Tab and saves with Ctrl+S. The scheduler uses the browser's date and time inputs.
+- Pages talk to the server through targeted request/reply messages. Changes are announced with small notices, sent only to users who can see the affected device, instead of broadcasting history, output and variable values.
+- Requires MeshCentral 1.2.0 or later. Update URLs point to this fork.
+
+### Added
+- Plugin permissions: "Manage ScriptTask" (library, variables, multi-device runs; denied by default) and "Run scripts" (allowed by default). Running on a device also needs its Remote Commands right.
+- Cancel individual pending runs. Users can cancel their own runs and delete their own schedules; managers can act on any.
+- Output viewer with formatted JSON, line wrap, copy and download.
+- Server tests (`node --test test/*.test.js`).
+
+### Fixed
+- Script names, variable values and script output are no longer inserted into the page as HTML.
+- Renaming or moving a folder no longer flattens its subfolders. Deleting a folder removes everything below it, with their schedules.
+- Agents can only report results for their own jobs.
+- Jobs whose script was deleted are closed instead of retried every minute.
+- Editing a Bash script no longer fails on line-ending normalisation.
+
+### Removed
+- tail.DateTime dependency.
+
 ## [0.0.20] - 2025-01-08
 ### Fixed
 - Merge PR fixing MeshCentral 1.1.35+ compatibility

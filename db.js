@@ -66,9 +66,9 @@ module.exports.CreateDB = function(meshserver) {
         
         obj.update = function(id, args) {
             id = formatId(id);
-            if (args.type == 'script' && args.content !== null) { 
+            if (typeof args.content == 'string') {
                 if (args.filetype == 'bash') {
-                    args.content = args.content = split('\r\n').join('\n').split('\r').join('\n');
+                    args.content = args.content.split('\r\n').join('\n').split('\r').join('\n');
                 }
                 args.contentHash = require('crypto').createHash('sha384').update(args.content).digest('hex');
             }
@@ -87,6 +87,18 @@ module.exports.CreateDB = function(meshserver) {
         };
         obj.getByPath = function(path) {
           return obj.scriptFile.find( { type: { $in: [ 'script', 'folder' ] }, path: path }).toArray();
+        };
+        // A folder and everything below it: items whose path is the folder's path or starts with it plus '/'
+        obj.getByPathPrefix = function(path) {
+          var re = new RegExp('^' + path.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '(/|$)');
+          return obj.scriptFile.find( { type: { $in: [ 'script', 'folder' ] }, path: { $regex: re } }).toArray();
+        };
+        // Move a folder subtree from one path to another, keeping each item's position below it
+        obj.rebasePath = function(oldPath, newPath) {
+          return obj.getByPathPrefix(oldPath)
+          .then((items) => {
+              return Promise.all(items.map(i => obj.update(i._id, { path: newPath + i.path.substring(oldPath.length) })));
+          });
         };
         obj.get = function(id) {
             if (id == null || id == 'null') return new Promise(function(resolve, reject) { resolve([]); });
@@ -167,6 +179,13 @@ module.exports.CreateDB = function(meshserver) {
                   { dontQueueUntil: { $lte: Math.floor(new Date() / 1000) } }
               ]
           }).toArray();
+        };
+        obj.getIncompleteJobsForNode = function(nodeId) {
+            return obj.scriptFile.find( {
+                type: 'job',
+                node: nodeId,
+                completeTime: null
+            }).sort({ dontQueueUntil: 1, queueTime: 1 }).toArray();
         };
         obj.getJobNodeHistory = function(nodeId) {
             return obj.scriptFile.find( { 

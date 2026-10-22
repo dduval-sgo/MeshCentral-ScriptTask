@@ -1,0 +1,104 @@
+/*
+ * ScriptTask plugin styles. Colours come only from Bootstrap's CSS variables, so every MeshCentral
+ * theme (default or Bootswatch) and light/dark mode applies without changes here.
+ */
+
+:root {
+    --st-gap: 1rem;
+    --st-row-hover: var(--bs-tertiary-bg);
+    --st-selected-bg: var(--bs-primary-bg-subtle);
+    --st-selected-fg: var(--bs-primary-text-emphasis);
+    --st-mono: SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+}
+
+html, body { background: transparent; }
+body { padding: 2px 2px 8px; overflow: hidden; }
+body.st-loading { visibility: hidden; }
+
+.bi { vertical-align: -0.125em; flex-shrink: 0; }
+
+/* Secondary buttons drawn from the theme's text and border colours. Bootstrap's outline-secondary
+   nearly disappears on some dark Bootswatch themes (e.g. Darkly), this stays readable on all of them. */
+.btn.st-btn-quiet {
+    --bs-btn-color: var(--bs-body-color);
+    --bs-btn-bg: transparent;
+    --bs-btn-border-color: var(--bs-border-color);
+    --bs-btn-hover-color: var(--bs-emphasis-color);
+    --bs-btn-hover-bg: var(--bs-tertiary-bg);
+    --bs-btn-hover-border-color: var(--bs-secondary-color);
+    --bs-btn-active-color: var(--bs-emphasis-color);
+    --bs-btn-active-bg: var(--bs-secondary-bg);
+    --bs-btn-active-border-color: var(--bs-secondary-color);
+    --bs-btn-disabled-color: var(--bs-secondary-color);
+    --bs-btn-disabled-border-color: var(--bs-border-color);
+}
+
+/* Cards and sections */
+.st-card { margin-bottom: var(--st-gap); }
+.st-card > .card-header { display: flex; align-items: center; gap: .5rem; flex-wrap: wrap; font-weight: 600; }
+.st-card > .card-header .st-actions { margin-left: auto; display: flex; gap: .25rem; flex-wrap: wrap; }
+.st-card > .card-body { padding: .75rem; }
+.st-section-title { font-size: .8rem; font-weight: 600; text-transform: uppercase; letter-spacing: .03em; color: var(--bs-secondary-color); margin: .25rem 0 .5rem; }
+.st-section-title + .st-section-title, .table + .st-section-title, .st-empty + .st-section-title { margin-top: 1rem; }
+
+.st-empty { text-align: center; padding: 1.25rem .5rem; font-size: .9rem; }
+
+/* Status strip at the top of the device tab */
+.st-strip { display: flex; align-items: center; gap: .75rem; flex-wrap: wrap; margin-bottom: var(--st-gap); }
+.st-strip .st-strip-note { color: var(--bs-secondary-color); font-size: .875rem; }
+.st-strip .st-strip-end { margin-left: auto; display: flex; gap: .25rem; }
+
+/* Badges */
+.st-status { font-weight: 500; white-space: nowrap; }
+.st-badge-outline { border: 1px solid var(--bs-border-color); color: var(--bs-secondary-color); }
+.st-badge-outline-warning { border: 1px solid var(--bs-warning-border-subtle); background: var(--bs-warning-bg-subtle); color: var(--bs-warning-text-emphasis); }
+.st-type { font-family: var(--st-mono); font-size: .7rem; font-weight: 600; border: 1px solid var(--bs-border-color); color: var(--bs-secondary-color); border-radius: var(--bs-border-radius-sm); padding: 0 .3rem; }
+
+/* Tables */
+.st-table { margin-bottom: 0; font-size: .875rem; }
+.st-table th { font-size: .75rem; font-weight: 600; color: var(--bs-secondary-color); white-space: nowrap; }
+.st-table td { vertical-align: middle; }
+.st-table tr.st-clickable { cursor: pointer; }
+.st-table tr.st-clickable:hover > td { background: var(--st-row-hover); }
+.st-table .st-col-actions { width: 1%; white-space: nowrap; text-align: right; }
+.st-output-preview { font-family: var(--st-mono); font-size: .8rem; color: var(--bs-secondary-color); max-width: 28rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* Script library tree */
+.st-tree { list-style: none; margin: 0; padding: 0; font-size: .9rem; max-height: 32rem; overflow-y: auto; }
+.st-tree ul { list-style: none; margin: 0; padding-left: 1rem; }
+.st-tree-row { display: flex; align-items: center; gap: .4rem; padding: .2rem .4rem; border-radius: var(--bs-border-radius-sm); cursor: pointer; user-select: none; min-height: 1.9rem; }
+.st-tree-row:hover { background: var(--st-row-hover); }
+.st-tree-row.st-selected { background: var(--st-selected-bg); color: var(--st-selected-fg); }
+.st-tree-row.st-drop-target { outline: 2px dashed var(--bs-primary); outline-offset: -2px; }
+.st-tree-row .st-tree-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1 1 auto; }
+.st-tree-row .st-tree-chevron { width: 1rem; color: var(--bs-secondary-color); }
+.st-tree-row .st-folder-icon { color: var(--bs-warning); }
+.st-drop-hint { border: 2px dashed var(--bs-primary); border-radius: var(--bs-border-radius); background: var(--bs-primary-bg-subtle); color: var(--bs-primary-text-emphasis); text-align: center; padding: 1rem; margin-bottom: .5rem; }
+
+/* Selected script panel */
+.st-script-head { display: flex; align-items: baseline; gap: .5rem; flex-wrap: wrap; }
+.st-script-head .st-script-name { font-size: 1.1rem; font-weight: 600; word-break: break-word; }
+.st-script-path { font-size: .8rem; color: var(--bs-secondary-color); }
+.st-run-actions { display: flex; flex-wrap: wrap; gap: .5rem; margin-top: .75rem; }
+
+/* Code and output */
+textarea.form-control.st-code { font-family: var(--st-mono); font-size: .85rem; tab-size: 4; white-space: pre; resize: vertical; min-height: 24rem; }
+.st-output { font-family: var(--st-mono); font-size: .8rem; background: var(--bs-tertiary-bg); border: 1px solid var(--bs-border-color); border-radius: var(--bs-border-radius); padding: .75rem; max-height: 60vh; overflow: auto; white-space: pre-wrap; word-break: break-word; margin: 0; }
+.st-output.st-nowrap { white-space: pre; word-break: normal; }
+.st-meta { display: grid; grid-template-columns: max-content 1fr; gap: .25rem 1rem; font-size: .875rem; margin-bottom: .75rem; }
+.st-meta dt { font-weight: 500; color: var(--bs-secondary-color); }
+.st-meta dd { margin: 0; }
+
+/* Overlays (inside this iframe) */
+/* The iframe grows to fit its content, so fixed-position overlays cover the whole page; dialogs are offset to the visible part */
+.st-toasts { position: fixed; right: 0; padding: .75rem; z-index: 1090; }
+
+/* Schedule form */
+.st-days .btn { min-width: 3rem; }
+
+/* Device picker */
+.st-picker { max-height: 18rem; overflow-y: auto; border: 1px solid var(--bs-border-color); border-radius: var(--bs-border-radius); }
+.st-picker .list-group-item { display: flex; align-items: center; gap: .5rem; border-left: 0; border-right: 0; }
+.st-picker .list-group-item:first-child { border-top: 0; }
+
+.st-classic-notice { max-width: 40rem; margin: 2rem auto; }

@@ -339,7 +339,11 @@ Remaining:
 
 Each step can ship on its own and keeps the plugin working.
 
-1. **Foundation.** Theme sync, shared CSS, RPC + listener registry, vendored Preact/htm, routes. Permissions and server-side enforcement (§3.5). Fix the `config.json` URLs and set `meshCentralCompat: ">=1.2.0"`. *Visible result:* the existing device tab restyled and theme-aware, with admin-only controls hidden from users.
+1. ✅ **Foundation** (done). Theme sync, shared CSS, RPC + listener registry, vendored Preact/htm, routes. Permissions and server-side enforcement (§3.5). Fix the `config.json` URLs and set `meshCentralCompat: ">=1.2.0"`. *Visible result:* the existing device tab restyled and theme-aware, with admin-only controls hidden from users.
+   Notes from building it:
+   - MeshCentral constructs plugins before `registerPermissions` exists, so permissions are registered in `server_startup`. With nothing registered, `checkPluginPermission` allows everything, so ScriptTask falls back to its own defaults in that case (manage denied).
+   - Interim: library editing, multi-device runs and variables are on the device tab for managers until the server page (step 4) exists.
+   - Tested on MeshCentral 1.3.0 with Playwright (default, Flatly, Darkly, Solar, Vapor; light and dark; live switching; admin, run-only and no-rights users) and with `test/server.test.js`. The Linux agent binary crashes in the cloud test VM, so agent round trips are covered by the server tests, not end to end.
 2. **Device tab rebuild.** Script picker with Run now and Schedule, editable queue (cancel), history + Output viewer, admin effective variables. Server: cancel/run-now/edit-schedule/pause, node-scoped queries.
 3. **Scheduling engine.** Offline and late-run policies (§3.6), the `missed` status, a wall-clock rewrite of `determineNextJobTime` with unit tests, migration of existing schedules, dispatch on connect.
 4. **Server page shell + Library + editor.** `hasAdminPanel: true`, CodeMirror bundle, tree, editor, script-scoped tabs.
