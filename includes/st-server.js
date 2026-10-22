@@ -17,7 +17,7 @@
 
     // ---- Routing: #/<section>[/<id>][?filters], e.g. #/library/<scriptId> or #/history?status=error&page=2 ----
 
-    var SECTIONS = ['library', 'queue', 'schedules', 'history', 'settings'];
+    var SECTIONS = ['library', 'run', 'batches', 'batch', 'queue', 'schedules', 'history', 'settings'];
     function parseRoute() {
         var m = /^#\/([a-z]+)(?:\/([^/?#]+))?(?:\?(.*))?$/.exec(location.hash);
         if (m == null || SECTIONS.indexOf(m[1]) === -1) return { section: 'library', id: null, query: {} };
@@ -254,6 +254,7 @@
         if (query.device) f.nodeIds = [query.device];
         else if (query.group) f.nodeIds = agentNodes().filter(function (n) { return n.meshid == query.group; }).map(function (n) { return n._id; }).concat(['none']);
         ['status', 'source', 'runBy', 'q'].forEach(function (k) { if (query[k]) f[k] = query[k]; });
+        if (query.batch) f.batchId = query.batch;
         if (query.from) f.from = Math.floor(new Date(query.from + 'T00:00').getTime() / 1000);
         if (query.to) f.to = Math.floor(new Date(query.to + 'T23:59:59').getTime() / 1000);
         return f;
@@ -291,6 +292,8 @@
                 <input type="search" class="form-control form-control-sm st-filter-wide" placeholder="Search output" aria-label="Search output" value=${text[0].q} onInput=${function (e) { typed('q', e.target.value); }} />
                 <label class="st-filter-date">From <input type="date" class="form-control form-control-sm" value=${q.from || ''} onChange=${function (e) { set('from', e.target.value); }} /></label>
                 <label class="st-filter-date">To <input type="date" class="form-control form-control-sm" value=${q.to || ''} onChange=${function (e) { set('to', e.target.value); }} /></label>` : null}
+            ${q.batch ? html`<span class="badge st-badge-outline st-filter-chip"><${ST.Icon} name="collection" class="me-1" /><a href=${'#/batch/' + encodeURIComponent(q.batch)}>One batch</a>
+                <button type="button" class="btn-close" aria-label="Show all batches" onClick=${function () { set('batch', ''); }}></button></span>` : null}
             ${active ? html`<button class="btn btn-sm btn-link" onClick=${function () { text[1]({ runBy: '', q: '' }); props.onChange({}); }}>Clear filters</button>` : null}
         </div>`;
     }
@@ -308,12 +311,16 @@
         </div>`;
     }
 
+    function BatchLink(props) {
+        if (!props.id) return null;
+        return html`<a href=${'#/batch/' + encodeURIComponent(props.id)} class="st-batch-link" title="Part of a batch. Open its results."><${ST.Icon} name="collection" /><span class="visually-hidden">Open batch</span></a>`;
+    }
     function DeviceCell(props) {
         var n = (host.nodes || []).find(function (x) { return x._id == props.id; });
         return html`<span class="st-device-cell">
             <span class=${'st-dot ' + (nodeOnline(props.id) ? 'st-dot-on' : 'st-dot-off')} title=${nodeOnline(props.id) ? 'Online' : 'Offline'}></span>
             <a href="#" onClick=${function (e) { e.preventDefault(); if (typeof host.gotoDevice == 'function') host.gotoDevice(props.id, 19); }} title="Open this device's page">${nodeName(props.id)}</a>
-            ${n ? html`<span class="st-script-path">${meshName(n.meshid)}</span>` : null}
+            ${n && !props.compact ? html`<span class="st-script-path">${meshName(n.meshid)}</span>` : null}
         </span>`;
     }
 
@@ -406,7 +413,7 @@
                     var status = j.state == 'stale' ? 'stale' : j.state;
                     return html`<tr key=${j._id} class=${sel.has(j._id) ? 'table-active' : ''}>
                         <td class="st-col-check"><input class="form-check-input" type="checkbox" aria-label=${'Select ' + j.scriptName} checked=${sel.has(j._id)} onChange=${function () { sel.toggle(j._id); }} /></td>
-                        <td>${j.scriptName}</td>
+                        <td>${j.scriptName}<${BatchLink} id=${j.batchId} /></td>
                         <td><${DeviceCell} id=${j.node} /></td>
                         <td><${ST.StatusBadge} status=${status} title=${status == 'stale' ? 'Sent over ' + ST.fmt.span(stale) + ' ago without a result. The device may have restarted, or the script is still running.' : null} /></td>
                         <td class="text-nowrap">${j.dispatchTime ? html`Sent <${ST.Time} t=${j.dispatchTime} />`
@@ -447,7 +454,7 @@
                 </tr></thead>
                 <tbody>${state.rows.map(function (s) { return html`<tr key=${s._id} class=${sel.has(s._id) ? 'table-active' : ''}>
                     <td class="st-col-check"><input class="form-check-input" type="checkbox" aria-label=${'Select ' + props.scriptName(s.scriptId)} checked=${sel.has(s._id)} onChange=${function () { sel.toggle(s._id); }} /></td>
-                    <td>${props.scriptName(s.scriptId)}</td>
+                    <td>${props.scriptName(s.scriptId)}<${BatchLink} id=${s.batchId} /></td>
                     <td><${DeviceCell} id=${s.node} /></td>
                     <td>${ST.fmt.recurrence(s)}${ST.fmt.zoneNote(s) ? ' (' + ST.fmt.zoneNote(s) + ')' : ''}<div class="text-body-secondary small">${ST.fmt.policy(s)}${s.endAt ? ', until ' + ST.fmt.time(s.endAt) : ''}</div></td>
                     <td>${s.paused ? html`<${ST.StatusBadge} status="paused" />` : html`<${ST.Time} t=${s.nextRun} empty="Not scheduled" />`}</td>
@@ -475,7 +482,7 @@
                 <thead><tr><th>Finished</th><th>Script</th><th>Device</th><th>Status</th><th>Took</th><th>Run by</th><th>Output</th></tr></thead>
                 <tbody>${state.rows.map(function (j) { var out = ST.jobOutput(j); return html`<tr key=${j._id} class="st-clickable" tabindex="0" onClick=${function (e) { if (e.target.closest('a')) return; open(j); }} onKeyDown=${function (e) { if (e.key == 'Enter') open(j); }}>
                     <td class="text-nowrap"><${ST.Time} t=${j.completeTime} /></td>
-                    <td class="text-nowrap">${j.scriptName}</td>
+                    <td class="text-nowrap">${j.scriptName}<${BatchLink} id=${j.batchId} /></td>
                     <td><${DeviceCell} id=${j.node} /></td>
                     <td><${ST.StatusBadge} status=${ST.jobStatus(j, true)} /></td>
                     <td class="text-nowrap">${(j.completeTime && j.dispatchTime && !j.missed) ? ST.fmt.duration(j.completeTime - j.dispatchTime) : ''}</td>
@@ -484,6 +491,349 @@
                 </tr>`; })}</tbody>
             </table></div>
         </${ListFrame}>`;
+    }
+
+    // ---- Run on several devices ----
+
+    var OS_LABEL = { win: 'Windows', other: 'Linux / macOS', unknown: 'Unknown' };
+    function osOf(n) { var w = S.isWindows(n); return w === null ? 'unknown' : (w ? 'win' : 'other'); }
+    var DEVICE_ROWS = 200;
+
+    // Choose a script and devices, then run now or schedule. Runs on more than one device become a batch.
+    function RunSection(props) {
+        var q = props.query;
+        var sid = useState(q.script || ''), scriptId = sid[0];
+        var favKey = 'favourites.' + props.userId;
+        var fav = useState(store(favKey) || []);
+        var sel = useState(function () { return new Set(q.devices ? q.devices.split(',') : []); }), selected = sel[0];
+        var f = useState({ text: '', group: '', tag: '', os: '', conn: '' }), filt = f[0];
+        var batchName = useState('');
+        var sets = useState([]), setId = useState('');
+        var limit = useState(DEVICE_ROWS);
+        useEffect(function () { ST.rpc('targetSets').then(sets[1], function () { }); }, []);
+
+        var item = props.items.find(function (i) { return i._id == scriptId && i.type == 'script'; }) || null;
+        var nodes = useMemo(function () {
+            return agentNodes().map(function (n) { return { _id: n._id, name: n.name, meshid: n.meshid, tags: n.tags || [], os: osOf(n), online: (n.conn & 1) != 0, node: n }; })
+                .sort(function (a, b) { return a.name.localeCompare(b.name); });
+        }, []);
+        var groups = useMemo(function () { var m = {}; nodes.forEach(function (n) { m[n.meshid] = meshName(n.meshid); }); return Object.keys(m).map(function (k) { return [k, m[k]]; }).sort(function (a, b) { return a[1].localeCompare(b[1]); }); }, [nodes]);
+        var tags = useMemo(function () { var t = {}; nodes.forEach(function (n) { n.tags.forEach(function (x) { t[x] = 1; }); }); return Object.keys(t).sort(); }, [nodes]);
+        var blockedReason = function (n) { if (item == null) return null; var c = S.compatibility(item.filetype, S.isWindows(n.node)); return (c && c.block) ? c.msg : null; };
+        var text = filt.text.trim().toLowerCase();
+        var shown = nodes.filter(function (n) {
+            if (text && n.name.toLowerCase().indexOf(text) < 0) return false;
+            if (filt.group && n.meshid != filt.group) return false;
+            if (filt.tag && n.tags.indexOf(filt.tag) < 0) return false;
+            if (filt.os && n.os != filt.os) return false;
+            if (filt.conn == 'online' && !n.online) return false;
+            if (filt.conn == 'offline' && n.online) return false;
+            if (filt.conn == 'selected' && !selected.has(n._id)) return false;
+            return true;
+        });
+        var choosable = shown.filter(function (n) { return !blockedReason(n); });
+        var allShown = choosable.length > 0 && choosable.every(function (n) { return selected.has(n._id); });
+        var setFilter = function (k, v) { var o = Object.assign({}, filt); o[k] = v; f[1](o); limit[1](DEVICE_ROWS); };
+        var setSelection = function (s) { sel[1](s); setId[1](''); };
+        var toggle = function (id) { var n = new Set(selected); if (n.has(id)) n.delete(id); else n.add(id); setSelection(n); };
+        var toggleShown = function () { var n = new Set(selected); choosable.forEach(function (x) { if (allShown) n.delete(x._id); else n.add(x._id); }); setSelection(n); };
+        // Selected devices that exist here, and those of them the chosen script can run on
+        var picked = nodes.filter(function (n) { return selected.has(n._id); });
+        var targets = picked.filter(function (n) { return !blockedReason(n); }).map(function (n) { return n._id; });
+        var skipped = picked.length - targets.length;
+        var offline = picked.filter(function (n) { return !n.online && !blockedReason(n); }).length;
+
+        var chooseScript = function (id) { sid[1](id); history.replaceState(null, '', routeHash({ section: 'run', query: { script: id } })); };
+        var toggleFav = function (id) { var next = (fav[0].indexOf(id) >= 0) ? fav[0].filter(function (x) { return x != id; }) : fav[0].concat([id]); fav[1](next); store(favKey, next); };
+        var loadSet = function (id) {
+            var t = sets[0].find(function (x) { return x._id == id; });
+            if (t == null) { setId[1](''); return; }
+            sel[1](new Set(t.nodeIds)); setId[1](id);
+            var gone = t.nodeIds.filter(function (n) { return !nodes.some(function (x) { return x._id == n; }); }).length;
+            if (gone) ST.ui.toast(plural(gone, 'device') + ' in this set no longer exist or you can\'t see them.');
+        };
+        var saveSet = function () {
+            var current = sets[0].find(function (x) { return x._id == setId[0]; });
+            ST.ui.prompt({ title: 'Save selected devices', label: 'Name for this set of ' + plural(picked.length, 'device'), value: current ? current.name : '', confirmText: 'Save' }).then(function (name) {
+                if (!name) return;
+                ST.ui.attempt(ST.rpc('saveTargetSet', { name: name, nodeIds: picked.map(function (n) { return n._id; }) }), 'Saved ' + name + '.').then(function (list) {
+                    if (list) { sets[1](list); var t = list.find(function (x) { return x.name == name.trim(); }); setId[1](t ? t._id : ''); }
+                });
+            });
+        };
+        var deleteSet = function () {
+            var t = sets[0].find(function (x) { return x._id == setId[0]; });
+            if (t) ST.ui.confirm({ title: 'Delete ' + t.name + '?', body: 'The saved set is deleted. Devices and runs are not affected.', confirmText: 'Delete', danger: true }).then(function (ok) {
+                if (ok) ST.ui.attempt(ST.rpc('deleteTargetSet', { id: t._id })).then(function (list) { if (list) { sets[1](list); setId[1](''); } });
+            });
+        };
+        var done = function (r, verb) {
+            var note = r.refused.length ? ' Skipped ' + plural(r.refused.length, 'device') + ' you can\'t run scripts on.' : '';
+            if (r.batchId) { ST.ui.toast(verb + ' on ' + plural(r.accepted, 'device') + '.' + note); props.go({ section: 'batch', id: r.batchId }); }
+            else ST.ui.toast(r.accepted ? verb + ' on ' + nodeName(targets[0]) + '.' + note : 'You can\'t run scripts on that device.', r.accepted ? undefined : 'error');
+        };
+        var runNow = function () {
+            ST.ui.attempt(ST.rpc('runScript', { scriptId: item._id, nodeIds: targets, name: batchName[0] || undefined })).then(function (r) { if (r) done(r, 'Queued'); });
+        };
+        var schedule = function () {
+            props.setDialog(html`<${ST.dialogs.Schedule} title=${'Schedule ' + item.name} subtitle=${'On ' + plural(targets.length, 'device')} settings=${props.settings} onClose=${props.close} onSubmit=${function (sc) {
+                return ST.rpc('addSchedule', { scriptId: item._id, nodeIds: targets, schedule: sc, name: batchName[0] || undefined }).then(function (r) { props.close(); done(r, 'Scheduled'); });
+            }} />`);
+        };
+
+        return html`<div class="st-list-page st-run-page">
+            <div class="st-list-head"><h2 class="h4 mb-0">Run</h2><span class="text-body-secondary small">Run or schedule a library script on several devices. Results are collected as a batch.</span></div>
+            <div class="card"><div class="card-body">
+                <label class="form-label st-section-title" for="st-run-script">Script</label>
+                <${S.ScriptPicker} id="st-run-script-list" items=${props.items} value=${scriptId} onChange=${chooseScript} favourites=${fav[0]} onToggleFav=${toggleFav} />
+                ${item ? html`<div class="st-script-head mt-2">
+                    <span class="st-type" title=${ST.fmt.filetype(item.filetype)}>${item.filetype}</span><span class="st-script-path">${item.path}</span>
+                    <a href=${'#/library/' + encodeURIComponent(item._id)} class="ms-auto small" onClick=${function (e) { e.preventDefault(); props.go({ section: 'library', id: item._id }); }}>Open in library</a>
+                </div>` : null}
+            </div></div>
+
+            <div class="card">
+                <div class="card-header st-run-devices-head">
+                    <span><${ST.Icon} name="collection" class="me-1" />Devices</span>
+                    <div class="st-run-sets">
+                        <select class="form-select form-select-sm" aria-label="Saved device sets" value=${setId[0]} onChange=${function (e) { loadSet(e.target.value); }}>
+                            <option value="">${sets[0].length ? 'Saved sets…' : 'No saved sets'}</option>
+                            ${sets[0].map(function (t) { return html`<option value=${t._id}>${t.name} (${t.nodeIds.length})</option>`; })}
+                        </select>
+                        <button class="btn btn-sm st-btn-quiet text-nowrap" disabled=${picked.length == 0} onClick=${saveSet} title="Save the selected devices as a named set"><${ST.Icon} name="bookmark-plus" class="me-1" />Save set</button>
+                        ${setId[0] ? html`<button class="btn btn-sm btn-outline-danger" onClick=${deleteSet} title="Delete this saved set"><${ST.Icon} name="trash3" /><span class="visually-hidden">Delete set</span></button>` : null}
+                    </div>
+                </div>
+                <div class="card-body pb-2">
+                    <div class="st-filters mb-2">
+                        <input type="search" class="form-control form-control-sm" placeholder="Search devices" aria-label="Search devices" value=${filt.text} onInput=${function (e) { setFilter('text', e.target.value); }} />
+                        <select class="form-select form-select-sm" aria-label="Device group" value=${filt.group} onChange=${function (e) { setFilter('group', e.target.value); }}>
+                            <option value="">All device groups</option>${groups.map(function (g) { return html`<option value=${g[0]}>${g[1]}</option>`; })}
+                        </select>
+                        ${tags.length ? html`<select class="form-select form-select-sm" aria-label="Tag" value=${filt.tag} onChange=${function (e) { setFilter('tag', e.target.value); }}>
+                            <option value="">All tags</option>${tags.map(function (t) { return html`<option value=${t}>${t}</option>`; })}
+                        </select>` : null}
+                        <select class="form-select form-select-sm" aria-label="Operating system" value=${filt.os} onChange=${function (e) { setFilter('os', e.target.value); }}>
+                            <option value="">Any OS</option><option value="win">Windows</option><option value="other">Linux / macOS</option>
+                        </select>
+                        <select class="form-select form-select-sm" aria-label="Show" value=${filt.conn} onChange=${function (e) { setFilter('conn', e.target.value); }}>
+                            <option value="">Online and offline</option><option value="online">Online</option><option value="offline">Offline</option><option value="selected">Selected only</option>
+                        </select>
+                    </div>
+                </div>
+                ${nodes.length == 0 ? html`<${ST.Empty} icon="collection">You don't have any devices with an agent.</${ST.Empty}>` : html`
+                <div class="table-responsive st-run-table"><table class="table table-sm table-hover st-table mb-0">
+                    <thead><tr>
+                        <th class="st-col-check"><input class="form-check-input" type="checkbox" aria-label="Select all shown" checked=${allShown} disabled=${choosable.length == 0} onChange=${toggleShown} /></th>
+                        <th>Device</th><th>Group</th><th>OS</th><th>Tags</th>
+                    </tr></thead>
+                    <tbody>${shown.length == 0 ? html`<tr><td colspan="5" class="text-center text-body-secondary py-3">No devices match.</td></tr>` : shown.slice(0, limit[0]).map(function (n) {
+                        var why = blockedReason(n);
+                        return html`<tr key=${n._id} class=${(selected.has(n._id) ? 'table-active' : '') + (why ? ' st-row-blocked' : '')} title=${why || ''}>
+                            <td class="st-col-check"><input class="form-check-input" type="checkbox" aria-label=${'Select ' + n.name} checked=${selected.has(n._id)} disabled=${why && !selected.has(n._id)} onChange=${function () { toggle(n._id); }} /></td>
+                            <td><span class=${'st-dot me-2 ' + (n.online ? 'st-dot-on' : 'st-dot-off')} title=${n.online ? 'Online' : 'Offline'}></span>${n.name}${why ? html`<div class="st-combo-reason">${why}</div>` : null}</td>
+                            <td class="text-body-secondary">${meshName(n.meshid)}</td>
+                            <td class="text-nowrap">${OS_LABEL[n.os]}</td>
+                            <td>${n.tags.map(function (t) { return html`<span class="badge st-badge-outline me-1">${t}</span>`; })}</td>
+                        </tr>`; })}</tbody>
+                </table></div>
+                ${shown.length > limit[0] ? html`<div class="px-3 py-2"><button class="btn btn-sm btn-link" onClick=${function () { limit[1](shown.length); }}>Show all ${shown.length} devices</button></div>` : null}`}
+            </div>
+
+            <div class="st-run-bar card">
+                <div class="card-body">
+                    <div class="st-run-summary">
+                        <strong>${plural(picked.length, 'device')} selected</strong>
+                        ${picked.length ? html`<button class="btn btn-sm btn-link p-0" onClick=${function () { setSelection(new Set()); }}>Clear</button>` : null}
+                        ${skipped ? html`<div class="text-warning-emphasis small"><${ST.Icon} name="exclamation-triangle-fill" class="me-1" />${plural(skipped, 'device')} can't run ${ST.fmt.filetype(item.filetype)} scripts and will be skipped.</div>` : null}
+                        ${offline ? html`<div class="text-body-secondary small"><${ST.Icon} name="wifi-off" class="me-1" />${plural(offline, 'device')} offline: runs wait until they connect.</div>` : null}
+                    </div>
+                    <input class="form-control form-control-sm st-run-name" placeholder="Batch name (optional)" aria-label="Batch name" maxlength="120" value=${batchName[0]} onInput=${function (e) { batchName[1](e.target.value); }} />
+                    <button class="btn st-btn-quiet" disabled=${item == null || targets.length == 0} onClick=${schedule}><${ST.Icon} name="calendar-plus" class="me-1" />Schedule…</button>
+                    <button class="btn btn-primary" disabled=${item == null || targets.length == 0} onClick=${runNow}><${ST.Icon} name="play-fill" class="me-1" />Run now${targets.length > 1 ? ' on ' + targets.length : ''}</button>
+                </div>
+            </div>
+        </div>`;
+    }
+
+    // ---- Batches ----
+
+    var STATE_ORDER = ['complete', 'error', 'missed', 'cancelled', 'none', 'stale', 'dispatched', 'queued', 'waiting', 'scheduled'];
+    var BAR_CLASS = { complete: 'bg-success', error: 'bg-danger', missed: 'bg-warning', stale: 'bg-warning', cancelled: 'bg-secondary', none: 'bg-secondary', dispatched: 'bg-info', queued: 'st-bar-pending', waiting: 'st-bar-pending', scheduled: 'st-bar-pending' };
+    var RERUN_STATES = ['error', 'missed', 'cancelled', 'none'];
+
+    // A stacked bar and legend of run states
+    function StateBar(props) {
+        var c = props.counts || {}, total = STATE_ORDER.reduce(function (t, k) { return t + (c[k] || 0); }, 0);
+        if (total == 0) return html`<span class="text-body-secondary small">No runs</span>`;
+        var parts = STATE_ORDER.filter(function (k) { return c[k]; });
+        return html`<div class="st-statebar">
+            <div class="progress-stacked" role="img" aria-label=${parts.map(function (k) { return c[k] + ' ' + ST.STATUS[k].label.toLowerCase(); }).join(', ')}>
+                ${parts.map(function (k) { return html`<div class="progress" style=${'width:' + (100 * c[k] / total) + '%'}><div class=${'progress-bar ' + BAR_CLASS[k]}></div></div>`; })}
+            </div>
+            ${props.legend === false ? null : html`<div class="st-statebar-legend">${parts.map(function (k) { return html`<span><span class=${'st-swatch ' + BAR_CLASS[k]}></span>${c[k]} ${ST.STATUS[k].label.toLowerCase()}</span>`; })}</div>`}
+        </div>`;
+    }
+
+    function batchTitle(b) { return b.name || b.scriptName; }
+
+    function BatchesSection(props) {
+        var page = Math.max(1, Number(props.query.page) || 1);
+        var st = useState({ loading: true, error: null, total: 0, rows: [] }), state = st[0], set = st[1];
+        var load = useCallback(function () {
+            return ST.rpc('batches', { skip: (page - 1) * PAGE_SIZE, limit: PAGE_SIZE }).then(function (r) { set({ loading: false, error: null, total: r.total, rows: r.batches }); }, function (e) { set({ loading: false, error: e.message, total: 0, rows: [] }); });
+        }, [page]);
+        useEffect(function () { load(); }, [load]);
+        useEffect(function () { var timer = null; return ST.onInvalidate(function (m) { if ((m.nodeIds && m.nodeIds.length) || (m.scriptIds && m.scriptIds.length)) { clearTimeout(timer); timer = setTimeout(load, 600); } }); }, [load]);
+        var open = function (b) { props.go({ section: 'batch', id: b.batchId }); };
+        return html`<div class="st-list-page">
+            <div class="st-list-head"><h2 class="h4 mb-0">Batches</h2><span class="text-body-secondary small">Runs and schedules across several devices, newest first</span>
+                <button class="btn btn-sm btn-primary ms-auto" onClick=${function () { props.go({ section: 'run' }); }}><${ST.Icon} name="send" class="me-1" />New run</button></div>
+            <div class="card"><div class="card-body p-0">
+                ${state.error ? html`<div class="alert alert-danger m-3">${state.error}</div>`
+                : state.loading ? html`<div class="text-center py-5"><${ST.Spinner} /></div>`
+                : state.rows.length == 0 ? html`<${ST.Empty} icon="collection">No batches yet. Run or schedule a script on several devices from Run.</${ST.Empty}>`
+                : html`<div class="table-responsive"><table class="table table-sm table-hover st-table mb-0">
+                    <thead><tr><th>Batch</th><th>Started</th><th>Devices</th><th class="st-col-results">Results</th></tr></thead>
+                    <tbody>${state.rows.map(function (b) { return html`<tr key=${b.batchId} class="st-clickable" tabindex="0" onClick=${function () { open(b); }} onKeyDown=${function (e) { if (e.key == 'Enter') open(b); }}>
+                        <td><a href=${'#/batch/' + b.batchId} onClick=${function (e) { e.preventDefault(); }}>${batchTitle(b)}</a>
+                            <div class="text-body-secondary small">${b.name ? b.scriptName + ' · ' : ''}${b.recurring ? html`<${ST.Icon} name="clock" class="me-1" />Scheduled: ${ST.fmt.recurrence(b.schedule || {})}` : 'Run now'}</div></td>
+                        <td class="text-nowrap"><${ST.Time} t=${b.createdAt} /><div class="text-body-secondary small">${b.createdBy}</div></td>
+                        <td>${b.visibleDevices}${b.visibleDevices != b.nodeIds.length ? html`<span class="text-body-secondary small"> of ${b.nodeIds.length}</span>` : null}</td>
+                        <td class="st-col-results">${b.recurring && b.slot ? html`<div class="text-body-secondary small mb-1">${b.slot > ST.now() ? 'Next' : 'Latest'}: ${ST.fmt.time(b.slot)}</div>` : null}<${StateBar} counts=${b.counts} /></td>
+                    </tr>`; })}</tbody>
+                </table></div>`}
+            </div></div>
+            <${Pager} total=${state.total} page=${page} onPage=${function (pg) { props.go({ section: 'batches', query: { page: pg } }); }} />
+        </div>`;
+    }
+
+    function csvCell(v) { v = (v == null) ? '' : String(v); return /[",\r\n]/.test(v) ? '"' + v.replace(/"/g, '""') + '"' : v; }
+    function isoTime(t) { return t ? new Date(t * 1000).toISOString() : ''; }
+
+    function DeviceChips(props) {
+        var more = useState(false), max = 12;
+        var ids = more[0] ? props.ids : props.ids.slice(0, max);
+        return html`<div class="st-chips">${ids.map(function (id) { return html`<${DeviceCell} key=${id} id=${id} compact=${true} />`; })}
+            ${props.ids.length > max ? html`<button class="btn btn-sm btn-link p-0" onClick=${function () { more[1](!more[0]); }}>${more[0] ? 'Show fewer' : '+' + (props.ids.length - max) + ' more'}</button>` : null}</div>`;
+    }
+
+    // One batch: a summary, devices grouped by identical result, and a row per device
+    function BatchView(props) {
+        var slot = props.query.slot ? Number(props.query.slot) : null;
+        var st = useState({ loading: true, error: null, data: null }), state = st[0], set = st[1];
+        var view = useState(store('batchView') || 'groups');
+        var data = state.data;
+        var load = useCallback(function () {
+            return ST.rpc('batch', { batchId: props.id, slot: slot }).then(function (d) { set({ loading: false, error: null, data: d }); }, function (e) { set({ loading: false, error: e.message, data: null }); });
+        }, [props.id, slot]);
+        useEffect(function () { load(); }, [load]);
+        var nodesRef = useRef([]);
+        nodesRef.current = data ? data.batch.nodeIds : [];
+        useEffect(function () {
+            var timer = null;
+            return ST.onInvalidate(function (m) {
+                var hit = (m.nodeIds || []).some(function (n) { return nodesRef.current.indexOf(n) >= 0; }) || (data && (m.scriptIds || []).indexOf(data.batch.scriptId) >= 0);
+                if (hit) { clearTimeout(timer); timer = setTimeout(load, 600); }
+            });
+        }, [load, data && data.batch.scriptId]);
+
+        if (state.error) return html`<div class="st-list-page"><${BackLink} go=${props.go} /><div class="alert alert-danger">${state.error}</div></div>`;
+        if (data == null) return html`<div class="text-center py-5"><${ST.Spinner} /></div>`;
+        var b = data.batch;
+        var groups = data.groups.slice();
+        var counts = Object.assign({}, data.counts);
+        if (data.missing.length) { groups.push({ state: 'none', output: '', nodeIds: data.missing, jobIds: [] }); counts.none = data.missing.length; }
+        var script = props.items.find(function (i) { return i._id == b.scriptId && i.type == 'script'; });
+        var rerunIds = [].concat.apply([], groups.filter(function (g) { return RERUN_STATES.indexOf(g.state) >= 0; }).map(function (g) { return g.nodeIds; }));
+        var pending = STATE_ORDER.slice(5).reduce(function (t, k) { return t + (counts[k] || 0); }, 0);
+        var setView = function (v) { view[1](v); store('batchView', v); };
+        var openJob = function (jobId) { ST.rpc('job', { id: jobId }).then(function (full) { props.openOutput(full); }, function (e) { ST.ui.toast(e.message, 'error'); }); };
+        var rerun = function () {
+            ST.ui.confirm({ title: 'Run again on ' + plural(rerunIds.length, 'device') + '?', body: html`<p class="mb-0">${b.scriptName} runs again on the devices that had an error, missed their run, or didn't run. Their new results replace the old ones in this batch; the old runs stay in History.</p>`, confirmText: 'Run again' })
+            .then(function (ok) {
+                if (ok) ST.ui.attempt(ST.rpc('runScript', { scriptId: b.scriptId, nodeIds: rerunIds, batchId: b.batchId })).then(function (r) {
+                    if (r) { ST.ui.toast('Queued on ' + plural(r.accepted, 'device') + (r.refused.length ? '. Skipped ' + r.refused.length + ' you can\'t run scripts on.' : '.')); load(); }
+                });
+            });
+        };
+        var exportCsv = function () {
+            ST.ui.attempt(ST.rpc('batch', { batchId: b.batchId, slot: data.slot, fullOutput: true })).then(function (full) {
+                if (full == null) return;
+                var lines = [['Device', 'Device group', 'Status', 'Queued', 'Sent', 'Finished', 'Output'].join(',')];
+                full.rows.slice().sort(function (x, y) { return nodeName(x.node).localeCompare(nodeName(y.node)); }).forEach(function (r) {
+                    var n = (host.nodes || []).find(function (x) { return x._id == r.node; });
+                    lines.push([nodeName(r.node), n ? meshName(n.meshid) : '', ST.STATUS[r.state].label, isoTime(r.queueTime), isoTime(r.dispatchTime), isoTime(r.completeTime), r.output].map(csvCell).join(','));
+                });
+                full.missing.forEach(function (id) { lines.push([nodeName(id), '', ST.STATUS.none.label, '', '', '', ''].map(csvCell).join(',')); });
+                var a = document.createElement('a');
+                a.href = URL.createObjectURL(new Blob(['﻿' + lines.join('\r\n')], { type: 'text/csv' }));
+                a.download = batchTitle(b).replace(/[^\w.-]+/g, '_') + (data.slot ? '-' + data.slot : '') + '.csv';
+                document.body.appendChild(a); a.click(); a.remove();
+                setTimeout(function () { URL.revokeObjectURL(a.href); }, 1000);
+            });
+        };
+        var rowsSorted = data.rows.concat(data.missing.map(function (id) { return { node: id, state: 'none' }; }))
+            .sort(function (x, y) { return (STATE_ORDER.indexOf(x.state) - STATE_ORDER.indexOf(y.state)) || nodeName(x.node).localeCompare(nodeName(y.node)); });
+
+        return html`<div class="st-list-page st-batch">
+            <${BackLink} go=${props.go} />
+            <div class="st-list-head">
+                <h2 class="h4 mb-0">${batchTitle(b)}</h2>
+                <span class="text-body-secondary small">${b.name ? b.scriptName + ' · ' : ''}${b.recurring ? 'Scheduled: ' + ST.fmt.recurrence(b.schedule || {}) + ' · ' : ''}${plural(b.nodeIds.length, 'device')} · started by ${b.createdBy} <${ST.Time} t=${b.createdAt} /></span>
+            </div>
+            ${b.recurring ? html`<div class="st-batch-slot">
+                <label class="form-label mb-0" for="st-slot">Run</label>
+                ${data.slots.length ? html`<select id="st-slot" class="form-select form-select-sm" value=${data.slot} onChange=${function (e) { props.go({ section: 'batch', id: b.batchId, query: { slot: e.target.value } }); }}>
+                    ${data.slots.map(function (s) { return html`<option value=${s}>${ST.fmt.time(s)}${s > ST.now() ? ' (next)' : ''}</option>`; })}
+                </select>` : html`<span class="text-body-secondary small">No runs yet</span>`}
+            </div>` : null}
+            <div class="card"><div class="card-body st-batch-summary">
+                <${StateBar} counts=${counts} />
+                <div class="st-batch-actions">
+                    ${!b.recurring && rerunIds.length && script ? html`<button class="btn btn-sm btn-primary" onClick=${rerun}><${ST.Icon} name="arrow-repeat" class="me-1" />Run again on ${plural(rerunIds.length, 'device')}</button>` : null}
+                    ${pending ? html`<button class="btn btn-sm st-btn-quiet" onClick=${function () { props.go({ section: 'queue', query: { batch: b.batchId } }); }}><${ST.Icon} name="list-task" class="me-1" />Queue</button>` : null}
+                    ${b.recurring ? html`<button class="btn btn-sm st-btn-quiet" onClick=${function () { props.go({ section: 'schedules', query: { batch: b.batchId } }); }}><${ST.Icon} name="clock" class="me-1" />Schedules</button>` : null}
+                    <button class="btn btn-sm st-btn-quiet" onClick=${function () { props.go({ section: 'history', query: { batch: b.batchId } }); }}><${ST.Icon} name="clock-history" class="me-1" />History</button>
+                    <button class="btn btn-sm st-btn-quiet" disabled=${data.rows.length == 0} onClick=${exportCsv}><${ST.Icon} name="filetype-csv" class="me-1" />Export CSV</button>
+                </div>
+            </div></div>
+            <div class="btn-group btn-group-sm align-self-start" role="group" aria-label="View">
+                <button class=${'btn ' + (view[0] == 'groups' ? 'btn-secondary' : 'st-btn-quiet')} aria-pressed=${view[0] == 'groups'} onClick=${function () { setView('groups'); }}>By result</button>
+                <button class=${'btn ' + (view[0] == 'devices' ? 'btn-secondary' : 'st-btn-quiet')} aria-pressed=${view[0] == 'devices'} onClick=${function () { setView('devices'); }}>By device</button>
+            </div>
+            ${groups.length == 0 ? html`<div class="card"><${ST.Empty} icon="collection">No runs on devices you can see.</${ST.Empty}></div>`
+            : view[0] == 'groups' ? groups.map(function (g, i) {
+                var finished = g.state == 'complete' || g.state == 'error';
+                return html`<div class="card st-result-group" key=${g.state + i}>
+                    <div class="card-header">
+                        <${ST.StatusBadge} status=${g.state} />
+                        <strong>${plural(g.nodeIds.length, 'device')}</strong>
+                        ${finished && groups.filter(function (x) { return x.state == 'complete' || x.state == 'error'; }).length > 1 ? html`<span class="text-body-secondary small">with this output</span>` : null}
+                        ${finished && g.jobIds.length ? html`<button class="btn btn-sm st-btn-quiet ms-auto" onClick=${function () { openJob(g.jobIds[0]); }}><${ST.Icon} name="eye" class="me-1" />Full output</button>` : null}
+                    </div>
+                    <div class="card-body">
+                        ${finished ? (g.output ? html`<pre class="st-group-output">${g.output}${g.truncated ? '\n…' : ''}</pre>` : html`<div class="text-body-tertiary small mb-2">No output</div>`) : null}
+                        <${DeviceChips} ids=${g.nodeIds} />
+                    </div>
+                </div>`;
+            })
+            : html`<div class="card"><div class="table-responsive"><table class="table table-sm table-hover st-table mb-0">
+                <thead><tr><th>Device</th><th>Status</th><th>When</th><th>Took</th><th>Output</th></tr></thead>
+                <tbody>${rowsSorted.map(function (r) {
+                    var finished = r.completeTime != null;
+                    return html`<tr key=${r.node} class=${finished ? 'st-clickable' : ''} tabindex=${finished ? '0' : null} onClick=${function (e) { if (finished && !e.target.closest('a')) openJob(r.jobId); }} onKeyDown=${function (e) { if (finished && e.key == 'Enter') openJob(r.jobId); }}>
+                        <td><${DeviceCell} id=${r.node} /></td>
+                        <td><${ST.StatusBadge} status=${r.state} /></td>
+                        <td class="text-nowrap">${r.completeTime ? html`<${ST.Time} t=${r.completeTime} />` : r.dispatchTime ? html`Sent <${ST.Time} t=${r.dispatchTime} />` : r.queueTime ? html`Queued <${ST.Time} t=${r.queueTime} />` : ''}</td>
+                        <td class="text-nowrap">${(r.completeTime && r.dispatchTime && r.state != 'missed') ? ST.fmt.duration(r.completeTime - r.dispatchTime) : ''}</td>
+                        <td><div class="st-output-preview">${r.output ? r.output.split('\n')[0] : finished ? html`<span class="text-body-tertiary">No output</span>` : ''}</div></td>
+                    </tr>`; })}</tbody>
+            </table></div></div>`}
+        </div>`;
+    }
+    function BackLink(props) {
+        return html`<a href="#/batches" class="st-back" onClick=${function (e) { e.preventDefault(); props.go({ section: 'batches' }); }}><${ST.Icon} name="arrow-left" class="me-1" />Batches</a>`;
     }
 
     // ---- App ----
@@ -584,23 +934,7 @@
                     ST.ui.attempt(ST.rpc('deleteItem', { id: item._id }), item.name + ' deleted.').then(function (r) { if (r) { dirty.current = false; location.hash = '#/library'; } });
                 });
             },
-            runMany: function (item) {
-                var nodes = (host.nodes || []).filter(function (n) { return n.mtype == 2; }).map(function (n) { return { _id: n._id, name: n.name, meshid: n.meshid, tags: n.tags, meshName: meshName(n.meshid) }; }).sort(function (x, y) { return x.name.localeCompare(y.name); });
-                setDialog(html`<${ST.dialogs.DevicePicker} nodes=${nodes} initial=${[]} scriptName=${item.name} onClose=${close}
-                    onSchedule=${function (ids) {
-                        setDialog(html`<${ST.dialogs.Schedule} title=${'Schedule ' + item.name} subtitle=${'On ' + plural(ids.length, 'device')} settings=${state.init.settings} onClose=${close} onSubmit=${function (sc) {
-                            return ST.rpc('addSchedule', { scriptId: item._id, nodeIds: ids, schedule: sc }).then(function (r) {
-                                close(); ST.ui.toast('Scheduled on ' + plural(r.accepted, 'device') + (r.refused.length ? '. Skipped ' + r.refused.length + ' you can\'t run scripts on.' : '.'));
-                            });
-                        }} />`);
-                    }}
-                    onRun=${function (ids) {
-                        ST.ui.attempt(ST.rpc('runScript', { scriptId: item._id, nodeIds: ids })).then(function (r) {
-                            if (r == null) return;
-                            close(); ST.ui.toast('Queued on ' + plural(r.accepted, 'device') + (r.refused.length ? '. Skipped ' + r.refused.length + ' you can\'t run scripts on.' : '.'));
-                        });
-                    }} />`);
-            },
+            runMany: function (item) { go({ section: 'run', query: { script: item._id } }); },
             openOutput: function (j) { setDialog(html`<${ST.dialogs.Output} job=${j} scriptName=${j.scriptName} deviceName=${nodeName(j.node)} onClose=${close} />`); },
             editVar: function (v, item) {
                 setDialog(html`<${ST.dialogs.Variable} variable=${v ? Object.assign({}, v, { scopeTargetName: v.scope == 'script' ? 'Script: ' + scriptName(v.scopeTarget) : null }) : null}
@@ -621,13 +955,14 @@
         if (!state.init.caps.manage) return html`<div class="alert alert-warning m-3"><${ST.Icon} name="lock" class="me-1" />The ScriptTask page is for ScriptTask managers. You can run library scripts from a device's ScriptTask tab.</div>`;
 
         var section = route[0].section;
-        var nav = [['library', 'Library', 'folder2-open'], ['queue', 'Queue', 'list-task'], ['schedules', 'Schedules', 'clock'], ['history', 'History', 'clock-history'], ['settings', 'Settings', 'gear']];
+        var nav = [['library', 'Library', 'folder2-open'], ['run', 'Run', 'send'], ['batches', 'Batches', 'collection'], ['queue', 'Queue', 'list-task'], ['schedules', 'Schedules', 'clock'], ['history', 'History', 'clock-history'], ['settings', 'Settings', 'gear']];
+        var navSection = (section == 'batch') ? 'batches' : section;
         var setQuery = function (q) { go({ section: section, id: null, query: q }); };
         return html`<div class="st-shell">
             <nav class="st-sidenav" aria-label="ScriptTask">
                 <div class="st-brand"><${ST.Icon} name="file-earmark-code" class="me-2" />ScriptTask</div>
                 <ul class="nav nav-pills flex-md-column">
-                    ${nav.map(function (n) { return html`<li class="nav-item"><a href=${'#/' + n[0]} class=${'nav-link' + (section == n[0] ? ' active' : '')} aria-current=${section == n[0] ? 'page' : null}
+                    ${nav.map(function (n) { return html`<li class="nav-item"><a href=${'#/' + n[0]} class=${'nav-link' + (navSection == n[0] ? ' active' : '')} aria-current=${navSection == n[0] ? 'page' : null}
                         onClick=${function (e) { e.preventDefault(); go({ section: n[0], id: null }); }}><${ST.Icon} name=${n[2]} class="me-2" />${n[1]}</a></li>`; })}
                 </ul>
                 <div class="st-sidenav-foot">Version ${state.init.version}</div>
@@ -646,6 +981,10 @@
                         : html`<${ScriptWorkspace} key=${selected._id} item=${selected} vars=${state.vars} actions=${actions} scheduleActions=${scheduleActions} onDirty=${function (d) { dirty.current = d; }} />`}
                     </div>
                 </div>` : null}
+                ${section == 'run' ? html`<${RunSection} key=${'run' + (route[0].query.script || '') + (route[0].query.devices || '')} query=${route[0].query} items=${items} userId=${state.init.user.id}
+                    settings=${state.init.settings} go=${go} setDialog=${setDialog} close=${close} />` : null}
+                ${section == 'batches' ? html`<${BatchesSection} query=${route[0].query} go=${go} />` : null}
+                ${section == 'batch' ? html`<${BatchView} key=${route[0].id} id=${route[0].id} query=${route[0].query} items=${items} go=${go} openOutput=${actions.openOutput} />` : null}
                 ${section == 'queue' ? html`<${QueueSection} query=${route[0].query} items=${items} onQuery=${setQuery} />` : null}
                 ${section == 'schedules' ? html`<${SchedulesSection} query=${route[0].query} items=${items} onQuery=${setQuery} scheduleActions=${scheduleActions} scriptName=${scriptName} />` : null}
                 ${section == 'history' ? html`<${HistorySection} query=${route[0].query} items=${items} onQuery=${setQuery} openOutput=${actions.openOutput} />` : null}

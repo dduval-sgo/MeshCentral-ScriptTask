@@ -8,7 +8,7 @@
 
 (function () {
     var html = ST.html;
-    var useState = preactHooks.useState, useMemo = preactHooks.useMemo, useRef = preactHooks.useRef;
+    var useState = preactHooks.useState, useMemo = preactHooks.useMemo, useRef = preactHooks.useRef, useEffect = preactHooks.useEffect;
     var host = ST.host;
     var S = ST.shared = {};
 
@@ -24,6 +24,103 @@
     }
     function meshName(id) { return (host && host.meshes && host.meshes[id]) ? host.meshes[id].name : 'Device group'; }
 
+
+    // Windows (true), not Windows (false), or unknown (null) for a device
+    function isWindows(n) {
+        if (n == null) return null;
+        if (n.osdesc) return /windows/i.test(n.osdesc);
+        if (n.agent && n.agent.id) return [1, 2, 3, 4, 21, 22, 34].indexOf(n.agent.id) >= 0;
+        return null;
+    }
+    // Why a script type can't ({ block: true }) or might not run on a device
+    function compatibility(filetype, win) {
+        if (win === null) return null;
+        if (filetype == 'bat' && !win) return { block: true, msg: 'Batch scripts only run on Windows.' };
+        if (filetype == 'bash' && win) return { block: true, msg: 'Bash scripts don\'t run on Windows.' };
+        if (filetype == 'ps1' && !win) return { block: false, msg: 'Needs PowerShell (pwsh) installed on this device.' };
+        return null;
+    }
+
+    // ---- Script picker ----
+
+    // Searchable list of library scripts. Favourites first, then by folder.
+    // props.compat(filetype), if given, says why a script can't run (shown, but can't be chosen) or might not.
+    function ScriptPicker(props) {
+        var compatibility = props.compat || function () { return null; };
+        var open = useState(false), q = useState(''), active = useState(-1);
+        var root = useRef(null), list = useRef(null), listId = props.id || 'st-combo-list';
+        var favs = props.favourites;
+        var scripts = props.items.filter(function (i) { return i.type == 'script'; });
+        var selected = scripts.find(function (s) { return s._id == props.value; }) || null;
+        var query = q[0].trim().toLowerCase();
+        var matches = scripts.filter(function (s) { return !query || s.name.toLowerCase().indexOf(query) >= 0 || s.path.toLowerCase().indexOf(query) >= 0; })
+            .sort(function (a, b) { return ((favs.indexOf(b._id) >= 0) - (favs.indexOf(a._id) >= 0)) || a.path.localeCompare(b.path) || a.name.localeCompare(b.name); });
+        var choosable = matches.filter(function (s) { var c = compatibility(s.filetype); return !(c && c.block); });
+
+        var close = function () { open[1](false); q[1](''); active[1](-1); };
+        var choose = function (s) { props.onChange(s._id); close(); if (root.current) root.current.querySelector('input').blur(); };
+
+        // Close when clicking elsewhere, and make sure the page is tall enough to show the whole list
+        useEffect(function () {
+            if (!open[0]) return;
+            var onDown = function (e) { if (root.current && !root.current.contains(e.target)) close(); };
+            document.addEventListener('mousedown', onDown);
+            var prev = document.body.style.minHeight;
+            if (list.current) document.body.style.minHeight = Math.ceil(list.current.getBoundingClientRect().bottom + window.scrollY + 16) + 'px';
+            return function () { document.removeEventListener('mousedown', onDown); document.body.style.minHeight = prev; };
+        }, [open[0]]);
+        useEffect(function () {
+            var el = list.current && list.current.querySelector('.st-combo-option.active');
+            if (el) el.scrollIntoView({ block: 'nearest' });
+        }, [active[0]]);
+
+        var onKeyDown = function (e) {
+            if (e.key == 'ArrowDown' || e.key == 'ArrowUp') {
+                e.preventDefault();
+                if (!open[0]) { open[1](true); return; }
+                var i = choosable.findIndex(function (s) { return s._id == (choosable[active[0]] || {})._id; });
+                i = (e.key == 'ArrowDown') ? Math.min(choosable.length - 1, i + 1) : Math.max(0, i - 1);
+                active[1](i);
+            } else if (e.key == 'Enter') {
+                e.preventDefault();
+                var pick = choosable[active[0]] || (choosable.length == 1 ? choosable[0] : null);
+                if (pick) choose(pick);
+            } else if (e.key == 'Escape') {
+                close();
+            }
+        };
+
+        var lastGroup = null;
+        var rows = [];
+        matches.forEach(function (s) {
+            var group = (favs.indexOf(s._id) >= 0) ? 'Favourites' : s.path;
+            if (group != lastGroup) { rows.push(html`<li key=${'g-' + group} class="st-combo-group" role="presentation">${group}</li>`); lastGroup = group; }
+            var c = compatibility(s.filetype), blocked = c && c.block, fav = favs.indexOf(s._id) >= 0;
+            var isActive = choosable[active[0]] && choosable[active[0]]._id == s._id;
+            rows.push(html`<li key=${s._id} id=${'st-opt-' + s._id} role="option" aria-selected=${s._id == props.value} aria-disabled=${blocked ? 'true' : 'false'}
+                class=${'st-combo-option' + (isActive ? ' active' : '') + (blocked ? ' st-disabled' : '') + (s._id == props.value ? ' st-current' : '')}
+                title=${blocked ? c.msg : ''} onMouseDown=${function (e) { e.preventDefault(); if (!blocked) choose(s); }}>
+                <button type="button" class=${'st-fav-btn' + (fav ? ' on' : '')} title=${fav ? 'Remove from favourites' : 'Add to favourites'} aria-label=${fav ? 'Remove from favourites' : 'Add to favourites'} aria-pressed=${fav}
+                    onMouseDown=${function (e) { e.preventDefault(); e.stopPropagation(); props.onToggleFav(s._id); }}><${ST.Icon} name=${fav ? 'star-fill' : 'star'} /></button>
+                <span class="st-combo-name">${s.name}${blocked ? html`<span class="st-combo-reason">${c.msg}</span>` : null}</span>
+                <span class="st-type">${s.filetype}</span>
+            </li>`);
+        });
+
+        return html`<div class="st-combo" ref=${root}>
+            <div class="input-group">
+                <span class="input-group-text"><${ST.Icon} name="search" /></span>
+                <input type="text" class="form-control" role="combobox" aria-expanded=${open[0]} aria-controls=${listId} aria-autocomplete="list"
+                    aria-activedescendant=${choosable[active[0]] ? 'st-opt-' + choosable[active[0]]._id : ''} aria-label="Script"
+                    placeholder=${selected ? selected.name : 'Search the script library'} value=${open[0] ? q[0] : (selected ? selected.name : '')}
+                    onFocus=${function () { open[1](true); }} onClick=${function () { open[1](true); }}
+                    onInput=${function (e) { q[1](e.target.value); open[1](true); active[1](0); }} onKeyDown=${onKeyDown} />
+            </div>
+            ${open[0] ? html`<ul id=${listId} class="st-combo-menu" role="listbox" ref=${list}>
+                ${scripts.length == 0 ? html`<li class="st-combo-empty">The library is empty.</li>` : matches.length == 0 ? html`<li class="st-combo-empty">No scripts match.</li>` : rows}
+            </ul>` : null}
+        </div>`;
+    }
 
     function detectType(fileName, content) {
         var ext = fileName.split('.').pop().toLowerCase();
@@ -230,7 +327,7 @@
     var SCOPE_LABEL = { global: 'Global', script: 'Script', mesh: 'Device group', node: 'Device' };
 
     Object.assign(S, {
-        store: store, nodeName: nodeName, meshName: meshName, detectType: detectType, buildTree: buildTree,
+        store: store, nodeName: nodeName, meshName: meshName, isWindows: isWindows, compatibility: compatibility, ScriptPicker: ScriptPicker, detectType: detectType, buildTree: buildTree,
         Library: Library, ShowMore: ShowMore, sortSchedules: sortSchedules, ScheduleTable: ScheduleTable, scheduleActions: scheduleActions,
         HistoryTable: HistoryTable, NewScriptDialog: NewScriptDialog, SCOPE_ORDER: SCOPE_ORDER, SCOPE_LABEL: SCOPE_LABEL
     });

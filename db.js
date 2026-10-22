@@ -170,6 +170,29 @@ module.exports.CreateDB = function(meshserver) {
             return obj.scriptFile.find( { type: { $in: [ 'job', 'jobSchedule' ] } } ).project( { node: 1 } ).toArray()
             .then((docs) => Array.from(new Set(docs.map(d => d.node).filter(n => typeof n == 'string'))));
         };
+        // Batches: one run or schedule across several devices. Their jobs carry batchId (and slot, for scheduled batches).
+        obj.addBatch = function(batch) {
+            return obj.scriptFile.insertOne(Object.assign({ type: 'batch' }, batch));
+        };
+        obj.getBatch = function(batchId) {
+            return obj.scriptFile.find( { type: 'batch', batchId: batchId } ).toArray().then((docs) => docs[0] || null);
+        };
+        obj.getBatches = function(skip, limit) {
+            return obj.scriptFile.find( { type: 'batch' } ).sort( { createdMs: -1 } ).skip(skip || 0).limit(limit || 20).toArray();
+        };
+        obj.countBatches = function() {
+            return obj.scriptFile.countDocuments( { type: 'batch' } );
+        };
+        obj.getJobsForBatches = function(batchIds) {
+            return obj.scriptFile.find( { type: 'job', batchId: { $in: batchIds } } ).toArray();
+        };
+        // Saved target sets: named lists of devices, per user
+        obj.getTargetSets = function(ownerId) {
+            return obj.scriptFile.find( { type: 'targetSet', ownerId: ownerId } ).sort( { name: 1 } ).toArray();
+        };
+        obj.saveTargetSet = function(ownerId, name, nodeIds) {
+            return obj.scriptFile.updateOne( { type: 'targetSet', ownerId: ownerId, name: name }, { $set: { nodeIds: nodeIds, updatedAt: Math.floor(Date.now() / 1000) } }, { upsert: true } );
+        };
         obj.getSettings = function() {
             return obj.scriptFile.find( { type: 'settings' } ).toArray().then((docs) => docs[0] || {});
         };

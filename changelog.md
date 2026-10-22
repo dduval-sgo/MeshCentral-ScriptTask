@@ -31,6 +31,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - Queue, Schedules and History sections on the ScriptTask page, covering every device the manager can see. Filters for script, device group, device, status, source and who ran it (History also searches output and filters by date). Filters are kept in the page address. Lists are paged, and refresh by themselves when runs change.
 - Bulk actions: cancel or run now for queued runs; pause, resume or delete schedules. A schedule's Run now runs the script once without changing the schedule.
 - Runs sent to a device more than 30 minutes ago without a result are flagged "No result yet".
+- Run section on the ScriptTask page: choose a script and devices (search, device group, tag, OS, online/offline, or selected only), then run now or schedule. Devices that can't run the script's type are listed but can't be selected. Selections can be saved as named device sets, per manager.
+- Batches: a run or schedule on several devices is grouped as a batch, optionally named. The batch page shows progress, groups devices by identical output, lists each device's result, exports CSV, and runs again on the devices that failed, missed or didn't run. Scheduled batches are shown one run at a time.
+- Queue, Schedules and History link each row to its batch, and can be filtered to one batch.
 - Server tests (`node --test test/*.test.js`).
 
 ### Fixed
@@ -45,7 +48,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ### Removed
 - tail.DateTime dependency.
-- Library editing on the device tab (it is on the ScriptTask page now). Managers keep multi-device runs and the variables that apply to the device.
+- Library editing on the device tab (it is on the ScriptTask page now). Managers keep the variables that apply to the device, and "Run on several devices…" opens the Run section with the device chosen.
 
 ## [0.0.20] - 2025-01-08
 ### Fixed

@@ -359,14 +359,21 @@ Each step can ship on its own and keeps the plugin working.
    - The editor bundle (`includes/vendor/st-codemirror.min.js`, 421 KB) is built by `tools/build-editor` (esbuild, packages pinned) and loads only when an editor or output view opens. `LICENSE-codemirror` lists the 28 bundled packages, all MIT.
    - `#var#` tokens are matched before the language's own rules, so PowerShell and Bash don't treat them as the start of a comment.
    - Non-site-admin managers can't see My Server > Plugins, so the device tab's Open ScriptTask button is their way in. It uses MeshCentral's own `goPlugin`, with the target script passed through localStorage.
-   - The section nav has Library and Settings so far. Queue, Schedules, History, Run/Batch, Variables and Overview arrive in steps 5 to 7.
+   - The section nav had Library and Settings at this point. Queue, Schedules, History, Run/Batch, Variables and Overview arrive in steps 5 to 7.
 5. ✅ **Queue, Schedules, History (server-wide)** (done). Paged queries, filters, bulk actions. Schedules sorted by next run.
    Notes from building it:
    - Managers only see jobs and schedules on devices they can see in MeshCentral, checked with MeshCentral's own `GetNodeWithRights` per device (cached 30 seconds per user, with new devices checked straight away). MeshCentral's `GetNodesWithRights` can't be used: its callback only fires if the last device checked is visible.
    - History is filtered and paged in the database. Lists carry the first 300 characters of output; the viewer fetches the full run. Queue and Schedules are small, so they are filtered on the server in memory.
    - Found and fixed in the NeDB wrapper: queries inherited the previous query's sort and limit.
    - Batch grouping in History waits for `batchId` in step 6. The stale threshold (30 minutes) becomes a setting in step 7.
-6. **Run/Batch + batch results.** Device picker, `batchId`, grouped results matrix.
+6. ✅ **Run/Batch + batch results** (done). Run page with device filters and saved sets, `batchId`, results grouped by identical output.
+   Notes from building it:
+   - The nav has separate Run and Batches sections. A run or schedule on more than one device creates a `batch` document; its jobs and schedules carry `batchId`, and scheduled jobs already carry their `slot`, so a scheduled batch is viewed one occurrence at a time.
+   - Output is compared after trimming and normalising line endings, so CRLF and LF results group together. Groups show the first 4,000 characters; CSV export fetches full output.
+   - Run again on failed devices adds the new runs to the same batch, and the batch shows each device's latest run. Devices whose run was cancelled before it was sent show as "Not run".
+   - Saved target sets are per manager. Incompatible devices (Batch on Linux/macOS, Bash on Windows) are listed but can't be selected. OS comes from the agent's reported OS.
+   - The device tab's "Run on several devices…" now opens the Run page with the script and device chosen; the old device-picker dialog is gone.
+   - Not done: a batch filter in the Batches list (by script or creator). Batch documents are kept when their script is deleted, showing the name they were created with.
 7. **Variables + Settings + Overview.**
 8. **Polish.** Keyboard shortcuts, empty states, readme and screenshots, version bump.
 

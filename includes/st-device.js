@@ -16,100 +16,8 @@
 
     // ---- Small helpers ----
 
-    // Windows, other, or unknown (null) for the current device
-    function deviceIsWindows() {
-        if (node == null) return null;
-        if (node.osdesc) return /windows/i.test(node.osdesc);
-        if (node.agent && node.agent.id) return [1, 2, 3, 4, 21, 22, 34].indexOf(node.agent.id) >= 0;
-        return null;
-    }
     // Why a script type can't (or might not) run on this device
-    function compatibility(filetype) {
-        var win = deviceIsWindows();
-        if (win === null) return null;
-        if (filetype == 'bat' && !win) return { block: true, msg: 'Batch scripts only run on Windows.' };
-        if (filetype == 'bash' && win) return { block: true, msg: 'Bash scripts don\'t run on Windows.' };
-        if (filetype == 'ps1' && !win) return { block: false, msg: 'Needs PowerShell (pwsh) installed on this device.' };
-        return null;
-    }
-    // ---- Script picker ----
-
-    // Searchable list of library scripts. Favourites first, then by folder. Scripts that can't run on this device are shown but can't be chosen.
-    function ScriptPicker(props) {
-        var open = useState(false), q = useState(''), active = useState(-1);
-        var root = useRef(null), list = useRef(null);
-        var favs = props.favourites;
-        var scripts = props.items.filter(function (i) { return i.type == 'script'; });
-        var selected = scripts.find(function (s) { return s._id == props.value; }) || null;
-        var query = q[0].trim().toLowerCase();
-        var matches = scripts.filter(function (s) { return !query || s.name.toLowerCase().indexOf(query) >= 0 || s.path.toLowerCase().indexOf(query) >= 0; })
-            .sort(function (a, b) { return ((favs.indexOf(b._id) >= 0) - (favs.indexOf(a._id) >= 0)) || a.path.localeCompare(b.path) || a.name.localeCompare(b.name); });
-        var choosable = matches.filter(function (s) { var c = compatibility(s.filetype); return !(c && c.block); });
-
-        var close = function () { open[1](false); q[1](''); active[1](-1); };
-        var choose = function (s) { props.onChange(s._id); close(); if (root.current) root.current.querySelector('input').blur(); };
-
-        // Close when clicking elsewhere, and make sure the page is tall enough to show the whole list
-        useEffect(function () {
-            if (!open[0]) return;
-            var onDown = function (e) { if (root.current && !root.current.contains(e.target)) close(); };
-            document.addEventListener('mousedown', onDown);
-            var prev = document.body.style.minHeight;
-            if (list.current) document.body.style.minHeight = Math.ceil(list.current.getBoundingClientRect().bottom + window.scrollY + 16) + 'px';
-            return function () { document.removeEventListener('mousedown', onDown); document.body.style.minHeight = prev; };
-        }, [open[0]]);
-        useEffect(function () {
-            var el = list.current && list.current.querySelector('.st-combo-option.active');
-            if (el) el.scrollIntoView({ block: 'nearest' });
-        }, [active[0]]);
-
-        var onKeyDown = function (e) {
-            if (e.key == 'ArrowDown' || e.key == 'ArrowUp') {
-                e.preventDefault();
-                if (!open[0]) { open[1](true); return; }
-                var i = choosable.findIndex(function (s) { return s._id == (choosable[active[0]] || {})._id; });
-                i = (e.key == 'ArrowDown') ? Math.min(choosable.length - 1, i + 1) : Math.max(0, i - 1);
-                active[1](i);
-            } else if (e.key == 'Enter') {
-                e.preventDefault();
-                var pick = choosable[active[0]] || (choosable.length == 1 ? choosable[0] : null);
-                if (pick) choose(pick);
-            } else if (e.key == 'Escape') {
-                close();
-            }
-        };
-
-        var lastGroup = null;
-        var rows = [];
-        matches.forEach(function (s) {
-            var group = (favs.indexOf(s._id) >= 0) ? 'Favourites' : s.path;
-            if (group != lastGroup) { rows.push(html`<li key=${'g-' + group} class="st-combo-group" role="presentation">${group}</li>`); lastGroup = group; }
-            var c = compatibility(s.filetype), blocked = c && c.block, fav = favs.indexOf(s._id) >= 0;
-            var isActive = choosable[active[0]] && choosable[active[0]]._id == s._id;
-            rows.push(html`<li key=${s._id} id=${'st-opt-' + s._id} role="option" aria-selected=${s._id == props.value} aria-disabled=${blocked ? 'true' : 'false'}
-                class=${'st-combo-option' + (isActive ? ' active' : '') + (blocked ? ' st-disabled' : '') + (s._id == props.value ? ' st-current' : '')}
-                title=${blocked ? c.msg : ''} onMouseDown=${function (e) { e.preventDefault(); if (!blocked) choose(s); }}>
-                <button type="button" class=${'st-fav-btn' + (fav ? ' on' : '')} title=${fav ? 'Remove from favourites' : 'Add to favourites'} aria-label=${fav ? 'Remove from favourites' : 'Add to favourites'} aria-pressed=${fav}
-                    onMouseDown=${function (e) { e.preventDefault(); e.stopPropagation(); props.onToggleFav(s._id); }}><${ST.Icon} name=${fav ? 'star-fill' : 'star'} /></button>
-                <span class="st-combo-name">${s.name}${blocked ? html`<span class="st-combo-reason">${c.msg}</span>` : null}</span>
-                <span class="st-type">${s.filetype}</span>
-            </li>`);
-        });
-
-        return html`<div class="st-combo" ref=${root}>
-            <div class="input-group">
-                <span class="input-group-text"><${ST.Icon} name="search" /></span>
-                <input type="text" class="form-control" role="combobox" aria-expanded=${open[0]} aria-controls="st-combo-list" aria-autocomplete="list"
-                    aria-activedescendant=${choosable[active[0]] ? 'st-opt-' + choosable[active[0]]._id : ''} aria-label="Script"
-                    placeholder=${selected ? selected.name : 'Search the script library'} value=${open[0] ? q[0] : (selected ? selected.name : '')}
-                    onFocus=${function () { open[1](true); }} onClick=${function () { open[1](true); }}
-                    onInput=${function (e) { q[1](e.target.value); open[1](true); active[1](0); }} onKeyDown=${onKeyDown} />
-            </div>
-            ${open[0] ? html`<ul id="st-combo-list" class="st-combo-menu" role="listbox" ref=${list}>
-                ${scripts.length == 0 ? html`<li class="st-combo-empty">The library is empty.</li>` : matches.length == 0 ? html`<li class="st-combo-empty">No scripts match.</li>` : rows}
-            </ul>` : null}
-        </div>`;
-    }
+    function compatibility(filetype) { return S.compatibility(filetype, S.isWindows(node)); }
 
     // ---- Run a script ----
 
@@ -121,7 +29,7 @@
         return html`<div class="card st-card">
             <div class="card-header"><${ST.Icon} name="play-fill" />Run a script</div>
             <div class="card-body">
-                <${ScriptPicker} items=${props.items} value=${props.runId} onChange=${props.onChoose} favourites=${props.favourites} onToggleFav=${props.onToggleFav} />
+                <${S.ScriptPicker} items=${props.items} value=${props.runId} onChange=${props.onChoose} favourites=${props.favourites} onToggleFav=${props.onToggleFav} compat=${compatibility} />
                 ${item == null ? html`<div class="form-text mt-2">Choose a script. Star the ones you use often to keep them at the top.</div>` : html`
                 <div class="st-chosen">
                     <div class="st-script-head">
@@ -135,7 +43,7 @@
                             <button class="btn btn-primary" disabled=${blocked} onClick=${function () { a.runNow(item); }}><${ST.Icon} name="play-fill" class="me-1" />Run now</button>
                             <button class="btn st-btn-quiet" disabled=${blocked} onClick=${function () { a.schedule(item); }}><${ST.Icon} name="calendar-plus" class="me-1" />Schedule…</button>` : null}
                         ${props.manage ? html`
-                            <button class="btn st-btn-quiet" onClick=${function () { a.runMany(item); }}><${ST.Icon} name="send" class="me-1" />Run on several devices…</button>
+                            <button class="btn st-btn-quiet" onClick=${function () { a.runMany(item); }}><${ST.Icon} name="send" class="me-1" />Run on several devices…<${ST.Icon} name="box-arrow-up-right" class="ms-1 small" /></button>
                             <button class="btn st-btn-quiet ms-auto" onClick=${function () { a.openLibrary(item._id); }}><${ST.Icon} name="pencil" class="me-1" />Edit in library<${ST.Icon} name="box-arrow-up-right" class="ms-1 small" /></button>` : null}
                     </div>
                 </div>`}
@@ -286,26 +194,18 @@
                     else ST.ui.toast((state.data && state.data.online) ? item.name + ' queued. It will start within a minute.' : item.name + ' queued. It will run when this device comes online.');
                 });
             },
-            schedule: function (item, nodeIds) {
-                var many = nodeIds != null;
-                setDialog(html`<${ST.dialogs.Schedule} title=${'Schedule ' + item.name} subtitle=${many ? 'On ' + nodeIds.length + ' devices' : 'On ' + node.name} settings=${state.init.settings} onClose=${close} onSubmit=${function (sc) {
-                    return ST.rpc('addSchedule', { scriptId: item._id, nodeIds: many ? nodeIds : [node._id], schedule: sc }).then(function (r) {
+            schedule: function (item) {
+                setDialog(html`<${ST.dialogs.Schedule} title=${'Schedule ' + item.name} subtitle=${'On ' + node.name} settings=${state.init.settings} onClose=${close} onSubmit=${function (sc) {
+                    return ST.rpc('addSchedule', { scriptId: item._id, nodeIds: [node._id], schedule: sc }).then(function (r) {
                         close();
-                        ST.ui.toast('Scheduled on ' + r.accepted + ' device' + (r.accepted == 1 ? '' : 's') + (r.refused.length ? '. Skipped ' + r.refused.length + ' you can\'t run scripts on.' : '.'));
+                        ST.ui.toast(r.accepted ? 'Scheduled.' : 'You can\'t run scripts on this device.', r.accepted ? undefined : 'error');
                     });
                 }} />`);
             },
+            // Multi-device runs are on the ScriptTask page, starting with this script and this device
             runMany: function (item) {
-                var nodes = (host.nodes || []).filter(function (n) { return n.mtype == 2; }).map(function (n) { return { _id: n._id, name: n.name, meshid: n.meshid, tags: n.tags, meshName: meshName(n.meshid) }; }).sort(function (x, y) { return x.name.localeCompare(y.name); });
-                setDialog(html`<${ST.dialogs.DevicePicker} nodes=${nodes} initial=${[node._id]} scriptName=${item.name} onClose=${close}
-                    onSchedule=${function (ids) { actions.schedule(item, ids); }}
-                    onRun=${function (ids) {
-                        ST.ui.attempt(ST.rpc('runScript', { scriptId: item._id, nodeIds: ids })).then(function (r) {
-                            if (r == null) return;
-                            close();
-                            ST.ui.toast('Queued on ' + r.accepted + ' device' + (r.accepted == 1 ? '' : 's') + (r.refused.length ? '. Skipped ' + r.refused.length + ' you can\'t run scripts on.' : '.'));
-                        });
-                    }} />`);
+                store('openRoute', '#/run?script=' + encodeURIComponent(item._id) + '&devices=' + encodeURIComponent(node._id));
+                if (typeof host.goPlugin == 'function') host.goPlugin('scripttask', 'ScriptTask');
             },
             cancelJob: function (j) {
                 ST.ui.confirm({ title: 'Cancel this run?', body: html`<p class="mb-0">${j.scriptName} won't run on ${node.name}.${j.dispatchTime ? ' It was already sent to the device, so it may still finish there.' : ''}</p>`, confirmText: 'Cancel run', danger: true })

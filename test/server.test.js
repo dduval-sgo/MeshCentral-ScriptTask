@@ -114,9 +114,9 @@ test('managers only: library, variables, multi-device runs', async function () {
     assert.ok(s.ok);
     assert.strictEqual((await rpc(ctx.plugin, 'alice', 'runScript', { scriptId: s.data.id, nodeIds: [LIN, WIN] })).error, 'Only ScriptTask managers can do this.');
     const one = await rpc(ctx.plugin, 'alice', 'runScript', { scriptId: s.data.id, nodeIds: [LIN] });
-    assert.deepStrictEqual(one.data, { accepted: 1, refused: [] });
+    assert.deepStrictEqual(one.data, { accepted: 1, refused: [], batchId: null });
     const bob = await rpc(ctx.plugin, 'bob', 'runScript', { scriptId: s.data.id, nodeIds: [LIN] });
-    assert.deepStrictEqual(bob.data, { accepted: 0, refused: [LIN] });
+    assert.deepStrictEqual(bob.data, { accepted: 0, refused: [LIN], batchId: null });
     // Bash line endings are normalised on save
     assert.strictEqual((await rpc(ctx.plugin, 'admin', 'getScript', { id: s.data.id })).data.content, 'uptime\n');
 });
@@ -448,4 +448,81 @@ test('bulk actions: cancel, run now, pause, resume and delete', async function (
     assert.strictEqual((await rpc(p, 'admin', 'queue', {})).data.total, 2);
     await rpc(p, 'admin', 'scheduleAction', { scheduleIds: ids, action: 'delete' });
     assert.deepStrictEqual([(await rpc(p, 'admin', 'schedules', {})).data.total, (await rpc(p, 'admin', 'queue', {})).data.total], [0, 0]);
+});
+
+test('batches: runs across several devices are grouped, with results grouped by identical output', async function () {
+    const ctx = createPlugin(); await ready(ctx);
+    const p = ctx.plugin, now = nowS();
+    const up = (await rpc(p, 'admin', 'addScript', { name: 'Up', filetype: 'bash', content: 'uptime' })).data.id;
+    const other = (await rpc(p, 'admin', 'addScript', { name: 'Other', filetype: 'bash', content: 'true' })).data.id;
+    // One device: no batch
+    assert.strictEqual((await rpc(p, 'admin', 'runScript', { scriptId: up, nodeIds: [LIN] })).data.batchId, null);
+    const r = (await rpc(p, 'admin', 'runScript', { scriptId: up, nodeIds: [LIN, WIN, OTHER, LIN], name: ' Patch check ' })).data;
+    assert.strictEqual(r.accepted, 2, 'duplicates removed');
+    assert.deepStrictEqual(r.refused, [OTHER]);
+    assert.ok(r.batchId);
+    const jobs = (await p.db.scriptFile.find({ type: 'job', batchId: r.batchId }).toArray());
+    assert.strictEqual(jobs.length, 2);
+    assert.strictEqual((await rpc(p, 'admin', 'queue', { filters: { batchId: r.batchId } })).data.total, 2);
+    for (const m of ['batches', 'batch', 'targetSets', 'saveTargetSet', 'deleteTargetSet']) assert.strictEqual((await rpc(p, 'alice', m, { batchId: r.batchId })).ok, false, m + ' is managers only');
+
+    let b = (await rpc(p, 'admin', 'batch', { batchId: r.batchId })).data;
+    assert.strictEqual(b.batch.name, 'Patch check');
+    assert.deepStrictEqual(b.groups.map(g => [g.state, g.nodeIds.length]), [['waiting', 2]], 'pending runs are grouped by state (no agents are connected)');
+    // Same output apart from line endings and trailing space: one group
+    const byNode = Object.fromEntries(jobs.map(j => [j.node, j]));
+    agentSends(p, LIN, { pluginaction: 'jobComplete', jobId: byNode[LIN]._id, scriptId: up, retVal: 'up 3 days\n', errVal: null, dispatchTime: now });
+    agentSends(p, WIN, { pluginaction: 'jobComplete', jobId: byNode[WIN]._id, scriptId: up, retVal: 'up 3 days\r\n', errVal: null, dispatchTime: now });
+    await wait(100);
+    b = (await rpc(p, 'admin', 'batch', { batchId: r.batchId })).data;
+    assert.strictEqual(b.groups.length, 1);
+    assert.deepStrictEqual([b.groups[0].state, b.groups[0].output, b.groups[0].nodeIds.length], ['complete', 'up 3 days', 2]);
+    assert.deepStrictEqual(b.counts, { complete: 2 });
+    assert.strictEqual((await rpc(p, 'admin', 'history', { filters: { batchId: r.batchId } })).data.total, 2);
+
+    // Running again on one device joins the batch; the batch shows that device's latest run
+    assert.strictEqual((await rpc(p, 'admin', 'runScript', { scriptId: other, nodeIds: [WIN], batchId: r.batchId })).ok, false, 'a different script cannot join');
+    assert.strictEqual((await rpc(p, 'admin', 'runScript', { scriptId: up, nodeIds: [WIN], batchId: r.batchId })).data.batchId, r.batchId);
+    b = (await rpc(p, 'admin', 'batch', { batchId: r.batchId })).data;
+    assert.strictEqual(b.rows.length, 2);
+    assert.deepStrictEqual(b.counts, { complete: 1, waiting: 1 });
+
+    // A schedule across devices: a recurring batch, viewed one occurrence at a time
+    const s = (await rpc(p, 'admin', 'addSchedule', { scriptId: up, nodeIds: [LIN, WIN], schedule: { recur: 'daily', interval: 1, startAt: now + 3600 } })).data;
+    assert.ok(s.batchId);
+    assert.strictEqual((await rpc(p, 'admin', 'schedules', { filters: { batchId: s.batchId } })).data.total, 2);
+    b = (await rpc(p, 'admin', 'batch', { batchId: s.batchId })).data;
+    assert.ok(b.batch.recurring);
+    assert.deepStrictEqual([b.slots.length, b.slot, b.counts.scheduled], [1, now + 3600, 2]);
+
+    const list = (await rpc(p, 'admin', 'batches', {})).data;
+    assert.strictEqual(list.total, 2);
+    assert.strictEqual(list.batches[0].batchId, s.batchId, 'newest first');
+    assert.deepStrictEqual(list.batches[1].counts, { complete: 1, waiting: 1 });
+    assert.strictEqual(list.batches[1].visibleDevices, 2);
+    assert.strictEqual((await rpc(p, 'admin', 'batch', { batchId: 'nope' })).ok, false);
+
+    // Cancelling a run before it is sent removes it; the device still shows in its batch, as not run
+    const r2 = (await rpc(p, 'admin', 'runScript', { scriptId: other, nodeIds: [LIN, WIN] })).data;
+    const winJob = (await p.db.scriptFile.find({ type: 'job', batchId: r2.batchId, node: WIN }).toArray())[0];
+    await rpc(p, 'admin', 'cancelJobs', { jobIds: [winJob._id] });
+    b = (await rpc(p, 'admin', 'batch', { batchId: r2.batchId })).data;
+    assert.deepStrictEqual([b.rows.length, b.missing], [1, [WIN]]);
+});
+
+test('saved target sets belong to the manager who saved them', async function () {
+    const ctx = createPlugin(); await ready(ctx);
+    const p = ctx.plugin;
+    assert.strictEqual((await rpc(p, 'admin', 'saveTargetSet', { name: 'Empty', nodeIds: [] })).ok, false);
+    let sets = (await rpc(p, 'admin', 'saveTargetSet', { name: 'Lab', nodeIds: [LIN, WIN] })).data;
+    assert.deepStrictEqual(sets.map(t => [t.name, t.nodeIds.length]), [['Lab', 2]]);
+    sets = (await rpc(p, 'admin', 'saveTargetSet', { name: 'Lab', nodeIds: [LIN] })).data;
+    assert.deepStrictEqual(sets.map(t => [t.name, t.nodeIds.length]), [['Lab', 1]], 'saving under the same name replaces it');
+    // Another manager neither sees nor deletes it
+    p.db.scriptFile.insertOne({ type: 'targetSet', ownerId: 'user//someone', name: 'Theirs', nodeIds: [WIN] });
+    await wait(50);
+    const theirs = (await p.db.getTargetSets('user//someone'))[0];
+    assert.strictEqual((await rpc(p, 'admin', 'targetSets', {})).data.length, 1);
+    assert.strictEqual((await rpc(p, 'admin', 'deleteTargetSet', { id: theirs._id })).ok, false);
+    assert.deepStrictEqual((await rpc(p, 'admin', 'deleteTargetSet', { id: sets[0]._id })).data, []);
 });

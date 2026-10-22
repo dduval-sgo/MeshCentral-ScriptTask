@@ -307,45 +307,4 @@
             </form>
         </${ST.Modal}>`;
     };
-
-    // ---- Device picker ----
-
-    // props: nodes [{_id,name,meshid,tags,meshName}], initial [ids], scriptName, onRun(ids), onSchedule(ids), onClose
-    ST.dialogs.DevicePicker = function (props) {
-        var sel = useState(new Set(props.initial || [])), selected = sel[0], setSelected = sel[1];
-        var q = useState(''), mesh = useState(''), tag = useState('');
-        var meshes = useMemo(function () { var m = {}; props.nodes.forEach(function (n) { m[n.meshid] = n.meshName; }); return Object.keys(m).map(function (k) { return [k, m[k]]; }).sort(function (a, b) { return a[1].localeCompare(b[1]); }); }, []);
-        var tags = useMemo(function () { var t = {}; props.nodes.forEach(function (n) { (n.tags || []).forEach(function (x) { t[x] = 1; }); }); return Object.keys(t).sort(); }, []);
-        var shown = props.nodes.filter(function (n) {
-            if (mesh[0] && n.meshid != mesh[0]) return false;
-            if (tag[0] && (n.tags || []).indexOf(tag[0]) === -1) return false;
-            if (q[0] && n.name.toLowerCase().indexOf(q[0].toLowerCase()) === -1) return false;
-            return true;
-        });
-        var toggle = function (id) { var n = new Set(selected); if (n.has(id)) n.delete(id); else n.add(id); setSelected(n); };
-        var allShown = shown.length > 0 && shown.every(function (n) { return selected.has(n._id); });
-        var toggleShown = function () { var n = new Set(selected); shown.forEach(function (x) { if (allShown) n.delete(x._id); else n.add(x._id); }); setSelected(n); };
-        var ids = Array.from(selected);
-        return html`<${ST.Modal} size="lg" title=${'Run ' + props.scriptName + ' on several devices'} onClose=${props.onClose} footer=${html`
-            <span class="me-auto text-body-secondary small">${ids.length} selected</span>
-            <button type="button" class="btn btn-secondary" onClick=${props.onClose}>Cancel</button>
-            <button type="button" class="btn btn-outline-primary" disabled=${ids.length == 0} onClick=${function () { props.onSchedule(ids); }}><${ST.Icon} name="calendar-plus" class="me-1" />Schedule…</button>
-            <button type="button" class="btn btn-primary" disabled=${ids.length == 0} onClick=${function () { props.onRun(ids); }}><${ST.Icon} name="play-fill" class="me-1" />Run now</button>`}>
-            <div class="row g-2 mb-2">
-                <div class="col-md-5"><input class="form-control form-control-sm" placeholder="Search devices" value=${q[0]} onInput=${function (e) { q[1](e.target.value); }} aria-label="Search devices" /></div>
-                <div class="col-md-4"><select class="form-select form-select-sm" value=${mesh[0]} onChange=${function (e) { mesh[1](e.target.value); }} aria-label="Device group"><option value="">All device groups</option>${meshes.map(function (m) { return html`<option value=${m[0]}>${m[1]}</option>`; })}</select></div>
-                <div class="col-md-3"><select class="form-select form-select-sm" value=${tag[0]} onChange=${function (e) { tag[1](e.target.value); }} aria-label="Tag"><option value="">All tags</option>${tags.map(function (t) { return html`<option value=${t}>${t}</option>`; })}</select></div>
-            </div>
-            <div class="form-check mb-2"><input class="form-check-input" type="checkbox" id="st-pick-all" checked=${allShown} onChange=${toggleShown} /><label class="form-check-label" for="st-pick-all">Select all shown (${shown.length})</label></div>
-            <div class="list-group list-group-flush st-picker">
-                ${shown.length == 0 ? html`<${ST.Empty}>No devices match.</${ST.Empty}>` : shown.map(function (n) { return html`
-                    <label key=${n._id} class="list-group-item list-group-item-action">
-                        <input class="form-check-input m-0" type="checkbox" checked=${selected.has(n._id)} onChange=${function () { toggle(n._id); }} />
-                        <span class="flex-grow-1">${n.name}</span>
-                        <span class="text-body-secondary small">${n.meshName}</span>
-                    </label>`; })}
-            </div>
-            <div class="form-text mt-2">Devices you don't have Remote Commands rights on are skipped.</div>
-        </${ST.Modal}>`;
-    };
 })();

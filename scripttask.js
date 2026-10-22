@@ -267,7 +267,7 @@ module.exports.scripttask = function (parent) {
                 }
                 var scripts = await obj.db.get(s.scriptId);
                 if (scripts.length == 0) continue;
-                await obj.db.addJob({ scriptId: s.scriptId, scriptName: scripts[0].name, node: s.node, runBy: s.scheduledBy, runById: s.scheduledById || null, dontQueueUntil: slot, slot: slot, expiresAt: obj.Schedule.expiresAt(s, slot, settings.skipGraceSeconds), jobSchedule: s._id });
+                await obj.db.addJob({ scriptId: s.scriptId, scriptName: scripts[0].name, node: s.node, runBy: s.scheduledBy, runById: s.scheduledById || null, dontQueueUntil: slot, slot: slot, expiresAt: obj.Schedule.expiresAt(s, slot, settings.skipGraceSeconds), jobSchedule: s._id, batchId: s.batchId || null });
                 await obj.db.update(s._id, { nextRun: slot });
                 obj.invalidate({ nodeIds: [s.node], scriptIds: [s.scriptId] });
             }
@@ -445,19 +445,27 @@ module.exports.scripttask = function (parent) {
         var nodeIds = Array.isArray(args.nodeIds) ? args.nodeIds.map(id) : [];
         if (nodeIds.length == 0) throw new RpcError('No device given.');
         if (nodeIds.length > 1) obj.requireManage(session);
-        var accepted = [], refused = [];
-        for (var nodeId of nodeIds) {
-            var caps = await obj.getNodeCaps(session, nodeId);
-            if (!caps.run) { refused.push(nodeId); continue; }
-            await obj.db.addJob({ scriptId: script._id, scriptName: script.name, node: nodeId, runBy: session.user.name, runById: session.user._id });
-            accepted.push(nodeId);
+        var allowed = await obj.allowedTargets(session, nodeIds), batchId = null;
+        if (args.batchId != null) {
+            // Running again on some of a batch's devices: the new runs join that batch, replacing those devices' results
+            obj.requireManage(session);
+            var batch = await obj.db.getBatch(String(args.batchId));
+            if (batch == null || batch.recurring || batch.scriptId != script._id) throw new RpcError('That batch can\'t be run again.');
+            batchId = batch.batchId;
+            var added = allowed.accepted.filter(function(n) { return batch.nodeIds.indexOf(n) < 0; });
+            if (added.length) await obj.db.update(batch._id, { nodeIds: batch.nodeIds.concat(added) });
+        } else if (allowed.accepted.length > 1) {
+            batchId = await obj.startBatch(session, script, allowed.accepted, args.name, false);
         }
-        if (accepted.length) {
+        for (var nodeId of allowed.accepted) {
+            await obj.db.addJob({ scriptId: script._id, scriptName: script.name, node: nodeId, runBy: session.user.name, runById: session.user._id, batchId: batchId });
+        }
+        if (allowed.accepted.length) {
             obj.resetQueueTimer();
             obj.queueRun();
-            obj.invalidate({ nodeIds: accepted, scriptIds: [script._id] });
+            obj.invalidate({ nodeIds: allowed.accepted, scriptIds: [script._id] });
         }
-        return { accepted: accepted.length, refused: refused };
+        return { accepted: allowed.accepted.length, refused: allowed.refused, batchId: batchId };
     };
 
     obj.rpc.addSchedule = async function(args, session) {
@@ -466,16 +474,14 @@ module.exports.scripttask = function (parent) {
         var nodeIds = Array.isArray(args.nodeIds) ? args.nodeIds.map(id) : [];
         if (nodeIds.length == 0) throw new RpcError('No device given.');
         if (nodeIds.length > 1) obj.requireManage(session);
-        var accepted = [], refused = [];
-        for (var nodeId of nodeIds) {
-            var caps = await obj.getNodeCaps(session, nodeId);
-            if (!caps.run) { refused.push(nodeId); continue; }
-            var r = await obj.db.addJobSchedule(Object.assign({ scriptId: script._id, node: nodeId, scheduledBy: session.user.name, scheduledById: session.user._id, lastRun: null, nextRun: null, lastSlot: null, anchorAt: null, paused: false }, sched));
+        var allowed = await obj.allowedTargets(session, nodeIds);
+        var batchId = (allowed.accepted.length > 1) ? await obj.startBatch(session, script, allowed.accepted, args.name, true, sched) : null;
+        for (var nodeId of allowed.accepted) {
+            var r = await obj.db.addJobSchedule(Object.assign({ scriptId: script._id, node: nodeId, scheduledBy: session.user.name, scheduledById: session.user._id, lastRun: null, nextRun: null, lastSlot: null, anchorAt: null, paused: false, batchId: batchId }, sched));
             await obj.ensureScheduleJobs(r.insertedId);
-            accepted.push(nodeId);
         }
-        if (accepted.length) obj.invalidate({ nodeIds: accepted, scriptIds: [script._id] });
-        return { accepted: accepted.length, refused: refused };
+        if (allowed.accepted.length) obj.invalidate({ nodeIds: allowed.accepted, scriptIds: [script._id] });
+        return { accepted: allowed.accepted.length, refused: allowed.refused, batchId: batchId };
     };
 
     // Cancel an incomplete job (permission already checked)
@@ -566,14 +572,14 @@ module.exports.scripttask = function (parent) {
     var STALE_SECONDS = 30 * 60; // A run sent this long ago without a result is flagged
     var PAGE_MAX = 200;
 
-    // Devices this user can see, out of those with ScriptTask jobs or schedules. Null means no restriction is needed.
+    // Devices this user can see, out of those with ScriptTask jobs or schedules (plus extraIds).
     // Uses MeshCentral's own rights check per device, cached briefly per user.
     var visibleCache = {};
-    obj.visibleNodes = async function(session) {
+    obj.visibleNodes = async function(session, extraIds) {
         var key = session.user._id, cached = visibleCache[key];
         if (cached == null || cached.until < Date.now()) cached = visibleCache[key] = { nodes: new Set(), checked: new Set(), until: Date.now() + 30000 };
         // Devices seen for the first time since the cache started are checked now, so new jobs show straight away
-        var ids = (await obj.db.getNodeIdsInUse()).filter(function(id) { return !cached.checked.has(id); });
+        var ids = Array.from(new Set((await obj.db.getNodeIdsInUse()).concat(extraIds || []))).filter(function(id) { return !cached.checked.has(id); });
         await Promise.all(ids.map(function(nodeId) {
             cached.checked.add(nodeId);
             return new Promise(function(resolve) {
@@ -596,6 +602,7 @@ module.exports.scripttask = function (parent) {
         if (Number(f.from) > 0) out.from = Math.floor(Number(f.from));
         if (Number(f.to) > 0) out.to = Math.floor(Number(f.to));
         if (typeof f.q == 'string' && f.q.trim()) out.q = f.q.trim().substring(0, 200);
+        if (typeof f.batchId == 'string' && f.batchId) out.batchId = f.batchId.substring(0, 64);
         return out;
     }
     function escapeRegex(s) { return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); }
@@ -621,6 +628,7 @@ module.exports.scripttask = function (parent) {
         var jobs = (await obj.db.getAllIncompleteJobs()).filter(function(j) {
             if (!nodes.has(j.node)) return false;
             if (filters.scriptId && j.scriptId != filters.scriptId) return false;
+            if (filters.batchId && j.batchId != filters.batchId) return false;
             if (runBy && !runBy.test(j.runBy || '')) return false;
             if (filters.source == 'manual' && j.jobSchedule != null) return false;
             if (filters.source == 'schedule' && j.jobSchedule == null) return false;
@@ -644,6 +652,7 @@ module.exports.scripttask = function (parent) {
         var list = (await obj.db.getAllSchedules()).filter(function(s) {
             if (!nodes.has(s.node)) return false;
             if (filters.scriptId && s.scriptId != filters.scriptId) return false;
+            if (filters.batchId && s.batchId != filters.batchId) return false;
             if (runBy && !runBy.test(s.scheduledBy || '')) return false;
             if (filters.status == 'paused' && s.paused !== true) return false;
             if (filters.status == 'active' && s.paused === true) return false;
@@ -660,6 +669,7 @@ module.exports.scripttask = function (parent) {
         var visible = await obj.visibleNodes(session);
         var and = [ { completeTime: { $ne: null } }, { node: { $in: nodeScope(filters, visible) } } ];
         if (filters.scriptId) and.push({ scriptId: filters.scriptId });
+        if (filters.batchId) and.push({ batchId: filters.batchId });
         if (filters.runBy) and.push({ runBy: { $regex: new RegExp(escapeRegex(filters.runBy), 'i') } });
         if (filters.source == 'manual') and.push({ jobSchedule: null });
         if (filters.source == 'schedule') and.push({ jobSchedule: { $ne: null } });
@@ -752,6 +762,128 @@ module.exports.scripttask = function (parent) {
         obj.settingsCache = null;
         obj.invalidate({ settings: true });
         return obj.getSettings();
+    };
+
+    // -- Batches (managers) --
+
+    // Which of these devices the user may run scripts on
+    obj.allowedTargets = async function(session, nodeIds) {
+        var accepted = [], refused = [];
+        for (var nodeId of Array.from(new Set(nodeIds))) {
+            var caps = await obj.getNodeCaps(session, nodeId);
+            if (caps.run) accepted.push(nodeId); else refused.push(nodeId);
+        }
+        return { accepted: accepted, refused: refused };
+    };
+    obj.startBatch = async function(session, script, nodeIds, name, recurring, sched) {
+        var batchId = require('crypto').randomBytes(9).toString('hex');
+        await obj.db.addBatch({ batchId: batchId, name: (typeof name == 'string' && name.trim()) ? name.trim().substring(0, 120) : null, scriptId: script._id, scriptName: script.name,
+            createdBy: session.user.name, createdById: session.user._id, createdAt: Math.floor(Date.now() / 1000), createdMs: Date.now(), nodeIds: nodeIds, recurring: recurring === true, schedule: sched || null });
+        return batchId;
+    };
+
+    // A job's state for batch summaries: finished states, or the queue's states while pending
+    function jobState(j, now) {
+        if (j.completeTime == null) return queueStatus(j, now);
+        if (j.cancelled) return 'cancelled';
+        if (j.missed) return 'missed';
+        return (j.errorVal != null && j.returnVal == null) ? 'error' : 'complete';
+    }
+    function jobOutput(j) {
+        var v = (j.errorVal != null && j.returnVal == null) ? j.errorVal : j.returnVal;
+        if (v == null) return '';
+        return ((typeof v == 'string') ? v : JSON.stringify(v)).replace(/\r\n?/g, '\n').trim();
+    }
+    // A manual batch can have several runs per device after Run again; it shows each device's latest
+    function latestPerNode(jobs) {
+        var latest = {};
+        jobs.forEach(function(j) {
+            var cur = latest[j.node];
+            // Runs queued in the same second: the unfinished one is the rerun
+            if (cur == null || (j.queueTime || 0) > (cur.queueTime || 0) || ((j.queueTime || 0) == (cur.queueTime || 0) && cur.completeTime != null && j.completeTime == null)) latest[j.node] = j;
+        });
+        return latest;
+    }
+    function countStates(jobs, now) {
+        var c = {};
+        jobs.forEach(function(j) { var st = jobState(j, now); c[st] = (c[st] || 0) + 1; });
+        return c;
+    }
+    // A scheduled batch's runs, one occurrence (slot) at a time: the latest one that has started, or the next one
+    function slotsOf(jobs) {
+        return Array.from(new Set(jobs.map(function(j) { return j.slot; }).filter(function(s) { return s != null; }))).sort(function(a, b) { return b - a; });
+    }
+    function currentSlot(slots, now) {
+        var started = slots.filter(function(s) { return s <= now; });
+        return started.length ? started[0] : (slots.length ? slots[slots.length - 1] : null);
+    }
+
+    obj.rpc.batches = async function(args, session) {
+        obj.requireManage(session);
+        var p = page(args), now = Math.floor(Date.now() / 1000);
+        var results = await Promise.all([obj.db.countBatches(), obj.db.getBatches(p.skip, p.limit)]);
+        var batches = results[1];
+        var visible = await obj.visibleNodes(session, [].concat.apply([], batches.map(function(b) { return b.nodeIds; })));
+        var jobs = batches.length ? await obj.db.getJobsForBatches(batches.map(function(b) { return b.batchId; })) : [];
+        batches.forEach(function(b) {
+            var mine = jobs.filter(function(j) { return j.batchId == b.batchId && visible.has(j.node); });
+            if (b.recurring) { b.slot = currentSlot(slotsOf(mine), now); mine = mine.filter(function(j) { return j.slot == b.slot; }); }
+            var latest = latestPerNode(mine);
+            b.counts = countStates(Object.keys(latest).map(function(k) { return latest[k]; }), now);
+            b.visibleDevices = b.nodeIds.filter(function(n) { return visible.has(n); }).length;
+        });
+        return { total: results[0], batches: batches };
+    };
+
+    // One batch's results: devices grouped by identical output, and a row per device
+    obj.rpc.batch = async function(args, session) {
+        obj.requireManage(session);
+        var batch = await obj.db.getBatch(String(args.batchId || ''));
+        if (batch == null) throw new RpcError('Batch not found.');
+        var now = Math.floor(Date.now() / 1000);
+        var visible = await obj.visibleNodes(session, batch.nodeIds);
+        var jobs = (await obj.db.getJobsForBatches([batch.batchId])).filter(function(j) { return visible.has(j.node); });
+        var slots = batch.recurring ? slotsOf(jobs) : [];
+        var slot = null;
+        if (batch.recurring) {
+            slot = (args.slot != null && slots.indexOf(Number(args.slot)) >= 0) ? Number(args.slot) : currentSlot(slots, now);
+            jobs = jobs.filter(function(j) { return j.slot == slot; });
+        }
+        var latest = latestPerNode(jobs);
+        jobs = Object.keys(latest).map(function(k) { return latest[k]; });
+        var groups = {}, rows = [];
+        jobs.forEach(function(j) {
+            var state = jobState(j, now), out = (j.completeTime != null) ? jobOutput(j) : '';
+            var finished = ['complete', 'error'].indexOf(state) >= 0;
+            var key = state + '\u0000' + (finished ? out : '');
+            if (groups[key] == null) groups[key] = { state: state, output: finished ? out.substring(0, 4000) : '', truncated: finished && out.length > 4000, nodeIds: [], jobIds: [] };
+            groups[key].nodeIds.push(j.node); groups[key].jobIds.push(j._id);
+            rows.push({ jobId: j._id, node: j.node, state: state, queueTime: j.queueTime, dispatchTime: j.dispatchTime, completeTime: j.completeTime, output: (args.fullOutput === true) ? out : out.substring(0, 2000), outputLength: out.length });
+        });
+        // Most common result first; finished results before pending ones
+        var order = { complete: 0, error: 0, missed: 1, cancelled: 1, stale: 2, dispatched: 3, queued: 4, waiting: 4, scheduled: 5 };
+        var list = Object.keys(groups).map(function(k) { return groups[k]; }).sort(function(a, b) { return (order[a.state] - order[b.state]) || (b.nodeIds.length - a.nodeIds.length); });
+        return { batch: batch, slots: slots, slot: slot, counts: countStates(jobs, now), groups: list, rows: rows,
+            missing: batch.nodeIds.filter(function(n) { return visible.has(n) && latest[n] == null; }) };
+    };
+
+    obj.rpc.targetSets = function(args, session) {
+        obj.requireManage(session);
+        return obj.db.getTargetSets(session.user._id);
+    };
+    obj.rpc.saveTargetSet = async function(args, session) {
+        obj.requireManage(session);
+        var nodeIds = Array.isArray(args.nodeIds) ? args.nodeIds.filter(function(n) { return typeof n == 'string'; }).slice(0, 5000) : [];
+        if (nodeIds.length == 0) throw new RpcError('Select some devices first.');
+        await obj.db.saveTargetSet(session.user._id, str(args.name, 80), nodeIds);
+        return obj.db.getTargetSets(session.user._id);
+    };
+    obj.rpc.deleteTargetSet = async function(args, session) {
+        obj.requireManage(session);
+        var set = await getOne(args.id, 'targetSet');
+        if (set.ownerId != session.user._id) throw new RpcError('Not found. It may have been deleted.');
+        await obj.db.delete(set._id);
+        return obj.db.getTargetSets(session.user._id);
     };
 
     // -- Library (managers) --

@@ -165,8 +165,10 @@
         error: { label: 'Error', cls: 'text-bg-danger', icon: 'exclamation-octagon-fill', title: '' },
         cancelled: { label: 'Cancelled', cls: 'st-badge-outline', icon: 'slash-circle', title: '' },
         missed: { label: 'Missed', cls: 'text-bg-warning', icon: 'calendar-x', title: 'The device was offline for longer than the schedule allows, so this run was skipped.' },
-        paused: { label: 'Paused', cls: 'st-badge-outline', icon: 'pause-fill', title: 'This schedule won\'t run until it is resumed.' }
+        paused: { label: 'Paused', cls: 'st-badge-outline', icon: 'pause-fill', title: 'This schedule won\'t run until it is resumed.' },
+        none: { label: 'Not run', cls: 'st-badge-outline', icon: 'slash-circle', title: 'Cancelled before it was sent, or its schedule was deleted or paused.' }
     };
+    ST.STATUS = STATUS;
     ST.StatusBadge = function (props) {
         var s = STATUS[props.status] || STATUS.queued;
         return html`<span class=${'badge st-status ' + s.cls} title=${props.title || s.title}><${ST.Icon} name=${s.icon} class="me-1" />${s.label}</span>`;
