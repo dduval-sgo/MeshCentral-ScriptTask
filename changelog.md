@@ -4,7 +4,63 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Known Issues]
-- None. Please feel free to submit an issue via [GitHub](https://github.com/ryanblenis/MeshCentral-ScriptTask) if you find anything.
+- None. Please feel free to submit an issue via [GitHub](https://github.com/dduval-sgo/MeshCentral-ScriptTask/issues) if you find anything.
+
+## [0.1.0] - 2026-10-23
+### Changed
+- Redesigned for MeshCentral's Modern UI, with Bootstrap and Preact. Pages follow MeshCentral's theme and light/dark mode, including live switching. Classic UI is no longer supported.
+- Device tab in a single column: run a script, the device's queue and schedules, its history, and for ScriptTask managers the variables that apply to it.
+- The scheduler opens as a dialog instead of a popup window, and uses the browser's date and time inputs.
+- Pages talk to the server through targeted request/reply messages. Changes are announced with small notices, sent only to users who can see the affected device, instead of broadcasting history, output and variable values.
+- Requires MeshCentral 1.2.0 or later. Update URLs point to this fork.
+
+### Added
+- Plugin permissions: "Manage ScriptTask" (library, variables, multi-device runs; denied by default) and "Run scripts" (allowed by default). Running on a device also needs its Remote Commands right.
+- Cancel individual pending runs. Users can cancel their own runs and delete their own schedules; managers can act on any.
+- Output viewer with formatted JSON, line wrap, copy and download.
+- Device tab: searchable script picker with per-user favourites. Scripts that can't run on the device's OS are listed but can't be chosen, with the reason shown.
+- Run again from any history row.
+- Long queues and schedule lists show the first 10 rows, with Show more.
+- Per-schedule handling of offline devices: run when it reconnects (as before), run only if it reconnects within a set time, or skip. Runs that don't happen are recorded as Missed.
+- Per-schedule handling of late runs (minutes, hourly and daily schedules): keep the original times, or shift to when the run actually happened.
+- Edit and pause/resume schedules. Users can change schedules they created; managers can change any.
+- Settings for managers: the Skip grace period (default 2 minutes, server-wide) and defaults for new schedules.
+- Due runs start within seconds of a device connecting, instead of at the next minute's queue check.
+- ScriptTask page for managers (My Server > Plugins > ScriptTask, or Open ScriptTask on a device tab): the script library with a folder tree, and for each script an editor plus its schedules, history and variables across all devices. Plugin settings moved here.
+- Code editor (CodeMirror 6, bundled): line numbers, PowerShell, Bash and Batch highlighting, search and replace, Tab indenting, and #variables# highlighted, with their values on hover and unknown ones underlined. Line endings (CRLF or LF) are kept, or can be changed; Bash is always saved with LF.
+- Code themes chosen per user, independent of the MeshCentral theme: Darcula, Dracula, Eclipse, GitHub Light/Dark, Monokai, Nord, One Dark, Solarized Light/Dark, Tokyo Night and VS Code Light/Dark. Auto picks GitHub Light or Darcula to match light or dark mode. Script output is shown in the same read-only code view.
+- Queue, Schedules and History sections on the ScriptTask page, covering every device the manager can see. Filters for script, device group, device, status, source and who ran it (History also searches output and filters by date). Filters are kept in the page address. Lists are paged, and refresh by themselves when runs change.
+- Bulk actions: cancel or run now for queued runs; pause, resume or delete schedules. A schedule's Run now runs the script once without changing the schedule.
+- Runs sent to a device more than 30 minutes ago without a result are flagged "No result yet".
+- Run section on the ScriptTask page: choose a script and devices (search, device group, tag, OS, online/offline, or selected only), then run now or schedule. Devices that can't run the script's type are listed but can't be selected. Selections can be saved as named device sets, per manager.
+- Batches: a run or schedule on several devices is grouped as a batch, optionally named. The batch page shows progress, groups devices by identical output, lists each device's result, exports CSV, and runs again on the devices that failed, missed or didn't run. Scheduled batches are shown one run at a time.
+- Queue, Schedules and History link each row to its batch, and can be filtered to one batch.
+- Overview, the ScriptTask page's new landing section: counts of queued, waiting and running runs, errors, missed and completed runs in the last 24 hours, and active schedules, each opening the matching list. Needs attention lists runs with no result yet and recent errors and missed runs; Up next lists schedules' next runs; recent batches show their progress.
+- Variables section: all variables in one table, with search, a scope filter, where each is used, and a warning for names scripts use that aren't defined. New variables can target any script, device group or device from a list.
+- Secret variables: hidden in lists and in the editor until revealed. Scripts still receive the value.
+- Settings for how long history is kept (default 90 days) and when a run is flagged "No result yet" (default 30 minutes).
+- Settings for how often the queue checks for due runs (default 60 seconds), rows per page on the ScriptTask page, the start-time step for new schedules, and the indentation for scripts that don't have any yet.
+- Keyboard shortcuts on the ScriptTask page (press ? to list them), and / to focus the script picker on the device tab.
+- Readme rewritten, with screenshots.
+- Server tests (`node --test test/*.test.js`).
+
+### Fixed
+- On MongoDB, runs and schedules now store their script and schedule as text ids, so filtering by script and looking up a schedule's runs work. Runs made by older versions are still found.
+- A new schedule's default start time could be only seconds away, and already past when saved. It is now always at least a minute ahead.
+- Schedules are calculated in the time zone they were created in, so "daily at 09:00" stays at 09:00 across daylight-saving changes.
+- A device that was offline no longer gets a burst of catch-up runs for a weekly schedule, and a schedule's end time is honoured.
+- Script names, variable values and script output are no longer inserted into the page as HTML.
+- Renaming or moving a folder no longer flattens its subfolders. Deleting a folder removes everything below it, with their schedules.
+- Agents can only report results for their own jobs.
+- Managers only see variables for device groups and devices they can see in MeshCentral.
+- Deleting a script also deletes its script variables.
+- Jobs whose script was deleted are closed instead of retried every minute.
+- Editing a Bash script no longer fails on line-ending normalisation.
+- NeDB queries no longer inherit a previous query's sort and limit (a list could silently stop at 200 items).
+
+### Removed
+- tail.DateTime dependency.
+- Library editing on the device tab (it is on the ScriptTask page now). Managers keep the variables that apply to the device, and "Run on several devices…" opens the Run section with the device chosen.
 
 ## [0.0.20] - 2025-01-08
 ### Fixed

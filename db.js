@@ -1,6 +1,8 @@
 /** 
 * @description MeshCentral-ScriptTask database module
 * @author Ryan Blenis
+* @author Desmond Duval (modifications)
+* Modified by Desmond Duval, 2026: redesigned interface, scheduling engine, batches, permissions and settings. See changelog.md.
 * @copyright Ryan Blenis 2019
 * @license Apache-2.0
 */
@@ -8,6 +10,12 @@
 "use strict";
 var Datastore = null;
 var formatId = null;
+// References to other documents are stored as strings. Jobs made by older versions on MongoDB hold their
+// schedule's id as an ObjectId, so schedule lookups match either form.
+function idForms(id) {
+    var s = String(id);
+    try { var o = formatId(s); return (o === s) ? [s] : [s, o]; } catch (e) { return [s]; }
+}
 
 module.exports.CreateDB = function(meshserver) {
     var obj = {};
@@ -66,9 +74,9 @@ module.exports.CreateDB = function(meshserver) {
         
         obj.update = function(id, args) {
             id = formatId(id);
-            if (args.type == 'script' && args.content !== null) { 
+            if (typeof args.content == 'string') {
                 if (args.filetype == 'bash') {
-                    args.content = args.content = split('\r\n').join('\n').split('\r').join('\n');
+                    args.content = args.content.split('\r\n').join('\n').split('\r').join('\n');
                 }
                 args.contentHash = require('crypto').createHash('sha384').update(args.content).digest('hex');
             }
@@ -83,10 +91,22 @@ module.exports.CreateDB = function(meshserver) {
         };
         obj.deleteSchedulesForScript = function(id) {
             id = formatId(id);
-            return obj.scriptFile.deleteMany( { type: 'jobSchedule', scriptId: id } );
+            return obj.scriptFile.deleteMany( { type: 'jobSchedule', scriptId: String(id) } );
         };
         obj.getByPath = function(path) {
           return obj.scriptFile.find( { type: { $in: [ 'script', 'folder' ] }, path: path }).toArray();
+        };
+        // A folder and everything below it: items whose path is the folder's path or starts with it plus '/'
+        obj.getByPathPrefix = function(path) {
+          var re = new RegExp('^' + path.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '(/|$)');
+          return obj.scriptFile.find( { type: { $in: [ 'script', 'folder' ] }, path: { $regex: re } }).toArray();
+        };
+        // Move a folder subtree from one path to another, keeping each item's position below it
+        obj.rebasePath = function(oldPath, newPath) {
+          return obj.getByPathPrefix(oldPath)
+          .then((items) => {
+              return Promise.all(items.map(i => obj.update(i._id, { path: newPath + i.path.substring(oldPath.length) })));
+          });
         };
         obj.get = function(id) {
             if (id == null || id == 'null') return new Promise(function(resolve, reject) { resolve([]); });
@@ -125,25 +145,67 @@ module.exports.CreateDB = function(meshserver) {
         obj.removeJobSchedule = function (id) {
             return obj.delete(id);
         };
-        obj.getSchedulesDueForJob = function(scheduleId) {
-            var nowTime = Math.floor(new Date() / 1000);
-            var scheduleIdLimiter = {};
-            if (scheduleId != null) {
-                scheduleIdLimiter._id = scheduleId;
-            }
-            return obj.scriptFile.find( { 
-                type: 'jobSchedule',
-                // startAt: { $gte: nowTime },
-                $or: [
-                    { endAt: null },
-                    { endAt: { $lte: nowTime } }
-                ],
-                $or: [
-                    { nextRun: null }, 
-                    { nextRun: { $lte: (nowTime + 60) } } // check a minute into the future
-                ],
-                ...scheduleIdLimiter
-            }).toArray();
+        // Schedules that aren't paused (optionally just one)
+        obj.getActiveSchedules = function(scheduleId) {
+            var find = { type: 'jobSchedule', paused: { $ne: true } };
+            if (scheduleId != null) find._id = formatId(scheduleId);
+            return obj.scriptFile.find(find).toArray();
+        };
+        // Ids of schedules that already have a job waiting or running
+        obj.getScheduleIdsWithIncompleteJobs = function() {
+            return obj.scriptFile.find( { type: 'job', completeTime: null, jobSchedule: { $ne: null } } ).project( { jobSchedule: 1 } ).toArray()
+            .then((jobs) => jobs.map(j => String(j.jobSchedule)));
+        };
+        // Jobs that were never sent and are past the time their schedule's offline policy allows
+        obj.getExpiredJobs = function(nowTime) {
+            return obj.scriptFile.find( { type: 'job', completeTime: null, dispatchTime: null, expiresAt: { $lte: nowTime } } ).toArray();
+        };
+        // Paged job queries for the ScriptTask page
+        obj.findJobs = function(find, sort, skip, limit) {
+            return obj.scriptFile.find(Object.assign({ type: 'job' }, find)).sort(sort).skip(skip || 0).limit(limit || 50).toArray();
+        };
+        obj.countJobs = function(find) {
+            return obj.scriptFile.countDocuments(Object.assign({ type: 'job' }, find));
+        };
+        obj.getAllIncompleteJobs = function() {
+            return obj.scriptFile.find( { type: 'job', completeTime: null } ).toArray();
+        };
+        obj.getAllSchedules = function() {
+            return obj.scriptFile.find( { type: 'jobSchedule' } ).toArray();
+        };
+        // Every device that has a job or schedule
+        obj.getNodeIdsInUse = function() {
+            return obj.scriptFile.find( { type: { $in: [ 'job', 'jobSchedule' ] } } ).project( { node: 1 } ).toArray()
+            .then((docs) => Array.from(new Set(docs.map(d => d.node).filter(n => typeof n == 'string'))));
+        };
+        // Batches: one run or schedule across several devices. Their jobs carry batchId (and slot, for scheduled batches).
+        obj.addBatch = function(batch) {
+            return obj.scriptFile.insertOne(Object.assign({ type: 'batch' }, batch));
+        };
+        obj.getBatch = function(batchId) {
+            return obj.scriptFile.find( { type: 'batch', batchId: batchId } ).toArray().then((docs) => docs[0] || null);
+        };
+        obj.getBatches = function(skip, limit) {
+            return obj.scriptFile.find( { type: 'batch' } ).sort( { createdMs: -1 } ).skip(skip || 0).limit(limit || 20).toArray();
+        };
+        obj.countBatches = function() {
+            return obj.scriptFile.countDocuments( { type: 'batch' } );
+        };
+        obj.getJobsForBatches = function(batchIds) {
+            return obj.scriptFile.find( { type: 'job', batchId: { $in: batchIds } } ).toArray();
+        };
+        // Saved target sets: named lists of devices, per user
+        obj.getTargetSets = function(ownerId) {
+            return obj.scriptFile.find( { type: 'targetSet', ownerId: ownerId } ).sort( { name: 1 } ).toArray();
+        };
+        obj.saveTargetSet = function(ownerId, name, nodeIds) {
+            return obj.scriptFile.updateOne( { type: 'targetSet', ownerId: ownerId, name: name }, { $set: { nodeIds: nodeIds, updatedAt: Math.floor(Date.now() / 1000) } }, { upsert: true } );
+        };
+        obj.getSettings = function() {
+            return obj.scriptFile.find( { type: 'settings' } ).toArray().then((docs) => docs[0] || {});
+        };
+        obj.saveSettings = function(settings) {
+            return obj.scriptFile.updateOne( { type: 'settings' }, { $set: settings }, { upsert: true } );
         };
         obj.deletePendingJobsForNode = function(node) {
             return obj.scriptFile.deleteMany({ 
@@ -156,17 +218,25 @@ module.exports.CreateDB = function(meshserver) {
           if (nodeScope == null || !Array.isArray(nodeScope)) {
             return false;
           }
-          // return jobs that has online nodes and queue time requirements have been met
+          // return jobs that has online nodes and queue time requirements have been met, and haven't expired
+          var nowTime = Math.floor(new Date() / 1000);
           return obj.scriptFile.find( { 
               type: 'job', 
               node: { $in: nodeScope },
               completeTime: null,
               //dispatchTime: null,
-              $or: [
-                  { dontQueueUntil: null }, 
-                  { dontQueueUntil: { $lte: Math.floor(new Date() / 1000) } }
+              $and: [
+                  { $or: [ { dontQueueUntil: null }, { dontQueueUntil: { $lte: nowTime } } ] },
+                  { $or: [ { expiresAt: { $exists: false } }, { expiresAt: null }, { expiresAt: { $gt: nowTime } } ] }
               ]
           }).toArray();
+        };
+        obj.getIncompleteJobsForNode = function(nodeId) {
+            return obj.scriptFile.find( {
+                type: 'job',
+                node: nodeId,
+                completeTime: null
+            }).sort({ dontQueueUntil: 1, queueTime: 1 }).toArray();
         };
         obj.getJobNodeHistory = function(nodeId) {
             return obj.scriptFile.find( { 
@@ -177,28 +247,44 @@ module.exports.CreateDB = function(meshserver) {
         obj.getJobScriptHistory = function(scriptId) {
             return obj.scriptFile.find( { 
                 type: 'job', 
-                scriptId: scriptId,
+                scriptId: String(scriptId),
             }).sort({ completeTime: -1, queueTime: -1 }).limit(200).toArray();
         };
         obj.updateScriptJobName = function(scriptId, scriptName) {
-            return obj.scriptFile.updateMany({ type: 'job', scriptId: scriptId }, { $set: { scriptName: scriptName } });    
+            return obj.scriptFile.updateMany({ type: 'job', scriptId: String(scriptId) }, { $set: { scriptName: scriptName } });    
         };
         obj.getJobSchedulesForScript = function(scriptId) {
-            return obj.scriptFile.find( { type: 'jobSchedule', scriptId: scriptId } ).toArray();
+            return obj.scriptFile.find( { type: 'jobSchedule', scriptId: String(scriptId) } ).toArray();
         };
         obj.getJobSchedulesForNode = function (nodeId) {
             return obj.scriptFile.find( { type: 'jobSchedule', node: nodeId } ).toArray();
         };
         obj.getIncompleteJobsForSchedule = function (schedId) {
-            return obj.scriptFile.find( { type: 'job', jobSchedule: schedId, completeTime: null } ).toArray();
+            return obj.scriptFile.find( { type: 'job', jobSchedule: { $in: idForms(schedId) }, completeTime: null } ).toArray();
+        };
+        obj.deleteUndispatchedJobsForSchedule = function (schedId) {
+            return obj.scriptFile.deleteMany( { type: 'job', jobSchedule: { $in: idForms(schedId) }, completeTime: null, dispatchTime: null } );
         };
         obj.deletePendingJobsForSchedule = function (schedId) {
-            return obj.scriptFile.deleteMany( { type: 'job', jobSchedule: schedId, completeTime: null } );
+            return obj.scriptFile.deleteMany( { type: 'job', jobSchedule: { $in: idForms(schedId) }, completeTime: null } );
         };
-        obj.deleteOldHistory = function() {
-            var nowTime = Math.floor(new Date() / 1000);
-            var oldTime = nowTime - (86400 * 90); // 90 days
-            return obj.scriptFile.deleteMany( { type: 'job', completeTime: { $lte: oldTime } } );
+        obj.deleteOldHistory = function(days) {
+            var oldTime = Math.floor(new Date() / 1000) - (86400 * (days || 90));
+            return obj.scriptFile.deleteMany( { type: 'job', completeTime: { $lte: oldTime } } ).then(function() {
+                // Batches older than that with nothing left: no runs, and no schedules still making runs
+                return obj.scriptFile.find( { type: 'batch', createdAt: { $lte: oldTime } } ).toArray();
+            }).then(async function(batches) {
+                for (var b of batches) {
+                    var left = await obj.scriptFile.countDocuments( { type: { $in: ['job', 'jobSchedule'] }, batchId: b.batchId } );
+                    if (left == 0) await obj.scriptFile.deleteOne( { _id: b._id } );
+                }
+            });
+        };
+        obj.deleteVariablesForScript = function(scriptId) {
+            return obj.scriptFile.deleteMany( { type: 'variable', scope: 'script', scopeTarget: String(scriptId) } );
+        };
+        obj.getScriptContents = function() {
+            return obj.scriptFile.find( { type: 'script' } ).project( { name: 1, content: 1 } ).toArray();
         };
         obj.addVariable = function(name, scope, scopeTarget, value) {
             var vObj = { 
