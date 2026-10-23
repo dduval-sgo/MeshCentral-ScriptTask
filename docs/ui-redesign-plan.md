@@ -374,7 +374,15 @@ Each step can ship on its own and keeps the plugin working.
    - Saved target sets are per manager. Incompatible devices (Batch on Linux/macOS, Bash on Windows) are listed but can't be selected. OS comes from the agent's reported OS.
    - The device tab's "Run on several devices…" now opens the Run page with the script and device chosen; the old device-picker dialog is gone.
    - Not done: a batch filter in the Batches list (by script or creator). Batch documents are kept when their script is deleted, showing the name they were created with.
-7. **Variables + Settings + Overview.**
+7. ✅ **Variables + Settings + Overview** (done).
+   Notes from building it:
+   - Overview is the ScriptTask page's landing section: counts (queued or running, waiting, and errors, missed and completed in the last 24 hours, active schedules) that open filtered lists, Needs attention (runs with no result yet, recent errors and missed runs), Up next, and recent batches. History links take a relative `since` filter.
+   - Variables section: every variable the manager can see, with target pickers for script, device group and device, search, scope filter, where each name is used, and names scripts use that aren't defined (with a Define shortcut).
+   - Secret variables: their values are left out of lists and the editor hover until revealed (`revealVar`); editing one without a new value keeps it. Agents still receive the value.
+   - Managers only see and change group and device variables for groups and devices they can see in MeshCentral (`IsMeshViewable`, `GetNodeWithRights`). Before, `variables` returned everything.
+   - Deleting a script deletes its script variables.
+   - Settings: history retention (days, default 90) and the "No result yet" time (default 30 minutes). Cleanup runs at most every 6 hours (before: a 1-in-100 chance each minute), straight away when retention is shortened, and also removes old batches with nothing left. Saving settings with fields left out keeps their current values.
+   - Not done from the original Settings list: history page size, queue tick interval, default schedule time step and default indent per script type. The queue already starts due runs when a device connects, and the editor detects indentation, so these weren't worth the extra settings.
 8. **Polish.** Keyboard shortcuts, empty states, readme and screenshots, version bump.
 
 ## Open questions

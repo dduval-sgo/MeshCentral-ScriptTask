@@ -171,11 +171,13 @@ module.exports.scripttask = function (parent) {
         .catch(e => { console.log('PLUGIN: ScriptTask: Queue Run Error: ', e); });
     };
 
+    // Delete runs older than the retention setting, at most every 6 hours
+    obj.lastCleanup = 0;
     obj.cleanHistory = function() {
-        if (Math.round(Math.random() * 100) == 99) {
-            //obj.debug('Plugin', 'ScriptTask', 'Running history cleanup');
-            obj.db.deleteOldHistory();
-        }
+        if (Date.now() - obj.lastCleanup < 6 * 3600 * 1000) return;
+        obj.lastCleanup = Date.now();
+        obj.getSettings().then(function(s) { return obj.db.deleteOldHistory(s.historyDays); })
+        .catch(function(e) { console.log('PLUGIN: ScriptTask: History cleanup error: ', e); });
     };
 
     // ---- HTTP ----
@@ -217,7 +219,7 @@ module.exports.scripttask = function (parent) {
     // Slots that passed while a device was offline are never run as a backlog.
 
     obj.Schedule = require(__dirname + '/schedule.js');
-    obj.SETTINGS_DEFAULTS = { skipGraceSeconds: 120, defaultOfflinePolicy: 'wait', defaultOfflineWindow: 7200, defaultAnchor: 'slot' };
+    obj.SETTINGS_DEFAULTS = { skipGraceSeconds: 120, defaultOfflinePolicy: 'wait', defaultOfflineWindow: 7200, defaultAnchor: 'slot', historyDays: 90, staleMinutes: 30 };
     obj.settingsCache = null;
     obj.getSettings = function() {
         if (obj.settingsCache != null) return Promise.resolve(obj.settingsCache);
@@ -569,7 +571,8 @@ module.exports.scripttask = function (parent) {
 
     // -- Server-wide queue, schedules and history (managers) --
 
-    var STALE_SECONDS = 30 * 60; // A run sent this long ago without a result is flagged
+    // A run sent this long ago without a result is flagged (a setting; RPCs that use it load settings first)
+    function staleSeconds() { return 60 * (obj.settingsCache ? obj.settingsCache.staleMinutes : obj.SETTINGS_DEFAULTS.staleMinutes); }
     var PAGE_MAX = 200;
 
     // Devices this user can see, out of those with ScriptTask jobs or schedules (plus extraIds).
@@ -613,7 +616,7 @@ module.exports.scripttask = function (parent) {
     }
     // A queued job's state, as the pages show it
     function queueStatus(j, now) {
-        if (j.dispatchTime != null) return (now - j.dispatchTime > STALE_SECONDS) ? 'stale' : 'dispatched';
+        if (j.dispatchTime != null) return (now - j.dispatchTime > staleSeconds()) ? 'stale' : 'dispatched';
         if (j.expiresAt != null && j.expiresAt <= now) return 'missed';
         if (j.dontQueueUntil != null && j.dontQueueUntil > now) return 'scheduled';
         return (obj.meshServer.webserver.wsagents[j.node] != null) ? 'queued' : 'waiting';
@@ -621,6 +624,7 @@ module.exports.scripttask = function (parent) {
 
     obj.rpc.queue = async function(args, session) {
         obj.requireManage(session);
+        await obj.getSettings();
         var filters = cleanFilters(args.filters), p = page(args), now = Math.floor(Date.now() / 1000);
         var visible = await obj.visibleNodes(session);
         var nodes = new Set(nodeScope(filters, visible));
@@ -640,7 +644,7 @@ module.exports.scripttask = function (parent) {
         // Running and overdue first, then by when they are due
         var order = { stale: 0, dispatched: 1, missed: 2, queued: 3, waiting: 4, scheduled: 5 };
         jobs.sort(function(a, b) { return (order[a.state] - order[b.state]) || ((a.dontQueueUntil || 0) - (b.dontQueueUntil || 0)); });
-        return { total: jobs.length, jobs: jobs.slice(p.skip, p.skip + p.limit), staleSeconds: STALE_SECONDS };
+        return { total: jobs.length, jobs: jobs.slice(p.skip, p.skip + p.limit), staleSeconds: staleSeconds() };
     };
 
     obj.rpc.schedules = async function(args, session) {
@@ -750,16 +754,24 @@ module.exports.scripttask = function (parent) {
 
     obj.rpc.saveSettings = async function(args, session) {
         obj.requireManage(session);
+        // Fields left out keep their current values
+        var before = await obj.getSettings();
+        args = Object.assign({}, before, args);
         var s = {
             skipGraceSeconds: Math.floor(Number(args.skipGraceSeconds)),
             defaultOfflinePolicy: (['wait', 'window', 'skip'].indexOf(args.defaultOfflinePolicy) >= 0) ? args.defaultOfflinePolicy : 'wait',
             defaultOfflineWindow: Math.floor(Number(args.defaultOfflineWindow)),
-            defaultAnchor: (args.defaultAnchor == 'actual') ? 'actual' : 'slot'
+            defaultAnchor: (args.defaultAnchor == 'actual') ? 'actual' : 'slot',
+            historyDays: Math.floor(Number(args.historyDays)),
+            staleMinutes: Math.floor(Number(args.staleMinutes))
         };
         if (!(s.skipGraceSeconds >= 60 && s.skipGraceSeconds <= 3600)) throw new RpcError('The Skip grace period must be between 1 and 60 minutes.');
+        if (!(s.historyDays >= 1 && s.historyDays <= 3650)) throw new RpcError('Keep history for between 1 and 3650 days.');
+        if (!(s.staleMinutes >= 5 && s.staleMinutes <= 1440)) throw new RpcError('The "No result yet" time must be between 5 minutes and 24 hours.');
         if (!(s.defaultOfflineWindow >= 60 && s.defaultOfflineWindow <= 30 * 86400)) throw new RpcError('The default window must be between 1 minute and 30 days.');
         await obj.db.saveSettings(s);
         obj.settingsCache = null;
+        if (s.historyDays < before.historyDays) { obj.lastCleanup = 0; obj.cleanHistory(); }
         obj.invalidate({ settings: true });
         return obj.getSettings();
     };
@@ -820,6 +832,7 @@ module.exports.scripttask = function (parent) {
 
     obj.rpc.batches = async function(args, session) {
         obj.requireManage(session);
+        await obj.getSettings();
         var p = page(args), now = Math.floor(Date.now() / 1000);
         var results = await Promise.all([obj.db.countBatches(), obj.db.getBatches(p.skip, p.limit)]);
         var batches = results[1];
@@ -838,6 +851,7 @@ module.exports.scripttask = function (parent) {
     // One batch's results: devices grouped by identical output, and a row per device
     obj.rpc.batch = async function(args, session) {
         obj.requireManage(session);
+        await obj.getSettings();
         var batch = await obj.db.getBatch(String(args.batchId || ''));
         if (batch == null) throw new RpcError('Batch not found.');
         var now = Math.floor(Date.now() / 1000);
@@ -980,8 +994,9 @@ module.exports.scripttask = function (parent) {
             var schedules = await obj.db.getJobSchedulesForScript(s._id);
             for (var sc of schedules) await obj.db.deletePendingJobsForSchedule(sc._id);
             await obj.db.deleteSchedulesForScript(s._id);
+            await obj.db.deleteVariablesForScript(s._id);
         }
-        obj.invalidate({ library: true, scriptIds: scripts.map(function(s) { return s._id; }) });
+        obj.invalidate({ library: true, variables: true, scriptIds: scripts.map(function(s) { return s._id; }) });
         return true;
     };
 
@@ -990,36 +1005,132 @@ module.exports.scripttask = function (parent) {
     function cleanVar(args) {
         var scopes = ['global', 'script', 'mesh', 'node'];
         if (scopes.indexOf(args.scope) === -1) throw new RpcError('Invalid scope.');
-        var v = { name: str(args.name, 128), scope: args.scope, scopeTarget: (args.scope == 'global') ? null : id(args.scopeTarget), value: (args.value == null) ? '' : String(args.value) };
+        var v = { name: str(args.name, 128), scope: args.scope, scopeTarget: (args.scope == 'global') ? null : id(args.scopeTarget), secret: args.secret === true };
         if (/[#\s]/.test(v.name)) throw new RpcError('Variable names can\'t contain spaces or #.');
-        if (v.value.length > 64 * 1024) throw new RpcError('Value is larger than 64 KB.');
+        // A secret's value is left out of lists, so editing one without a new value keeps the old value
+        if (args.value !== undefined) {
+            v.value = (args.value == null) ? '' : String(args.value);
+            if (v.value.length > 64 * 1024) throw new RpcError('Value is larger than 64 KB.');
+        }
         return v;
     }
+    // Managers only see and set variables for device groups and devices they can see
+    obj.canSeeMesh = function(session, meshId) {
+        if (obj.isFullAdmin(session.user) && typeof obj.meshServer.webserver.IsMeshViewable != 'function') return true;
+        return typeof obj.meshServer.webserver.IsMeshViewable == 'function' && obj.meshServer.webserver.IsMeshViewable(session.user, meshId) === true;
+    };
+    obj.canSeeNode = function(session, nodeId) {
+        return new Promise(function(resolve) {
+            obj.meshServer.webserver.GetNodeWithRights(session.domain, session.user, nodeId, function(node, rights, visible) { resolve(node != null && visible === true); });
+        });
+    };
+    // newTarget: the target is being set, so a script target must exist (an existing variable may outlive its script)
+    async function checkVarTarget(session, v, newTarget) {
+        if (v.scope == 'mesh' && !obj.canSeeMesh(session, v.scopeTarget)) throw new RpcError('Device group not found.');
+        if (v.scope == 'node' && !(await obj.canSeeNode(session, v.scopeTarget))) throw new RpcError('Device not found.');
+        if (v.scope == 'script' && newTarget) await getOne(v.scopeTarget, 'script');
+    }
 
-    obj.rpc.variables = function(args, session) {
+    obj.rpc.variables = async function(args, session) {
         obj.requireManage(session);
-        return obj.db.getVariables();
+        var vars = await obj.db.getVariables(), out = [], nodeSeen = {};
+        for (var v of vars) {
+            if (v.scope == 'mesh' && !obj.canSeeMesh(session, v.scopeTarget)) continue;
+            if (v.scope == 'node') {
+                if (nodeSeen[v.scopeTarget] == null) nodeSeen[v.scopeTarget] = await obj.canSeeNode(session, v.scopeTarget);
+                if (!nodeSeen[v.scopeTarget]) continue;
+            }
+            if (v.secret === true) { v = Object.assign({}, v); delete v.value; }
+            out.push(v);
+        }
+        return out;
+    };
+    obj.rpc.revealVar = async function(args, session) {
+        obj.requireManage(session);
+        var v = await getOne(args.id, 'variable');
+        await checkVarTarget(session, v);
+        return v.value;
+    };
+    // Which library scripts use each variable name, as #name#
+    obj.rpc.varUsage = async function(args, session) {
+        obj.requireManage(session);
+        var usage = {}, re = /#([A-Za-z0-9_:.\-]+)#/g, m;
+        (await obj.db.getScriptContents()).forEach(function(sc) {
+            var seen = {};
+            re.lastIndex = 0;
+            while ((m = re.exec(sc.content || '')) != null) {
+                if (seen[m[1]]) continue;
+                seen[m[1]] = true;
+                (usage[m[1]] = usage[m[1]] || []).push(sc._id);
+            }
+        });
+        return usage;
     };
     obj.rpc.addVar = async function(args, session) {
         obj.requireManage(session);
         var v = cleanVar(args);
-        await obj.db.addVariable(v.name, v.scope, v.scopeTarget, v.value);
+        await checkVarTarget(session, v, true);
+        var r = await obj.db.addVariable(v.name, v.scope, v.scopeTarget, v.value || '');
+        if (v.secret) await obj.db.update(r.insertedId, { secret: true });
         obj.invalidate({ variables: true });
         return true;
     };
     obj.rpc.editVar = async function(args, session) {
         obj.requireManage(session);
         var existing = await getOne(args.id, 'variable');
-        await obj.db.update(existing._id, cleanVar(args));
+        await checkVarTarget(session, existing);
+        var v = cleanVar(args);
+        await checkVarTarget(session, v, v.scope != existing.scope || v.scopeTarget != existing.scopeTarget);
+        if (v.value === undefined && existing.secret !== true) throw new RpcError('Invalid input.');
+        await obj.db.update(existing._id, v);
         obj.invalidate({ variables: true });
         return true;
     };
     obj.rpc.deleteVar = async function(args, session) {
         obj.requireManage(session);
         var existing = await getOne(args.id, 'variable');
+        await checkVarTarget(session, existing);
         await obj.db.delete(existing._id);
         obj.invalidate({ variables: true });
         return true;
+    };
+
+    // -- Overview (managers) --
+
+    obj.rpc.overview = async function(args, session) {
+        obj.requireManage(session);
+        var settings = await obj.getSettings();
+        var now = Math.floor(Date.now() / 1000), since = now - 86400;
+        var visible = await obj.visibleNodes(session), nodes = Array.from(visible);
+        var queue = (await obj.db.getAllIncompleteJobs()).filter(function(j) { return visible.has(j.node); });
+        var counts = { queued: 0, waiting: 0, scheduled: 0, dispatched: 0, stale: 0, missed: 0 };
+        queue.forEach(function(j) { j.state = queueStatus(j, now); counts[j.state]++; });
+        var recent = { $and: [ { node: { $in: nodes } }, { completeTime: { $gte: since } } ] };
+        var failed = { $and: recent.$and.concat([ { errorVal: { $ne: null } }, { returnVal: null }, { missed: { $ne: true } }, { cancelled: { $ne: true } } ]) };
+        var missed = { $and: recent.$and.concat([ { missed: true } ]) };
+        var completed = { $and: recent.$and.concat([ { returnVal: { $ne: null } }, { cancelled: { $ne: true } } ]) };
+        var r = await Promise.all([
+            obj.db.countJobs(failed), obj.db.countJobs(missed), obj.db.countJobs(completed),
+            obj.db.findJobs({ $or: [ failed, missed ] }, { completeTime: -1 }, 0, 8),
+            obj.db.getAllSchedules()
+        ]);
+        var schedules = r[4].filter(function(s) { return visible.has(s.node); });
+        var trim = function(j) {
+            ['returnVal', 'errorVal'].forEach(function(k) { if (typeof j[k] == 'string' && j[k].length > 300) j[k] = j[k].substring(0, 300); });
+            return j;
+        };
+        return {
+            now: now,
+            staleSeconds: settings.staleMinutes * 60,
+            queue: counts,
+            day: { failed: r[0], missed: r[1], completed: r[2] },
+            schedules: { active: schedules.filter(function(s) { return s.paused !== true && s.nextRun != null; }).length, paused: schedules.filter(function(s) { return s.paused === true; }).length },
+            // Needs attention: recent errors and missed runs, and runs sent long ago without a result
+            failures: r[3].map(trim),
+            stale: queue.filter(function(j) { return j.state == 'stale'; }).sort(function(a, b) { return a.dispatchTime - b.dispatchTime; }).slice(0, 8),
+            // Schedules' next runs, soonest first, including ones already due and waiting for their device
+            upNext: queue.filter(function(j) { return j.jobSchedule != null && ['scheduled', 'queued', 'waiting'].indexOf(j.state) >= 0; }).sort(function(a, b) { return a.dontQueueUntil - b.dontQueueUntil; }).slice(0, 10)
+        };
     };
 
     obj.handleRpc = function(command, session) {

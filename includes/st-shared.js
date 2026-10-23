@@ -323,12 +323,26 @@
     }
 
 
+    // A variable's value in a list; secrets stay hidden until revealed
+    function VarValue(props) {
+        var v = props.variable, shown = useState(null);
+        if (v.secret !== true) return html`<div class="st-output-preview">${v.value}</div>`;
+        var reveal = function () {
+            if (shown[0] != null) { shown[1](null); return; }
+            ST.rpc('revealVar', { id: v._id }).then(function (val) { shown[1](val); }, function (e) { ST.ui.toast(e.message, 'error'); });
+        };
+        return html`<div class="st-secret">
+            ${shown[0] != null ? html`<span class="st-output-preview">${shown[0]}</span>` : html`<span class="st-secret-mask" title="Secret">••••••••</span>`}
+            <button type="button" class="btn btn-sm btn-link p-0" onClick=${reveal}>${shown[0] != null ? 'Hide' : 'Reveal'}</button>
+        </div>`;
+    }
+
     var SCOPE_ORDER = { global: 0, script: 1, mesh: 2, node: 3 };
     var SCOPE_LABEL = { global: 'Global', script: 'Script', mesh: 'Device group', node: 'Device' };
 
     Object.assign(S, {
         store: store, nodeName: nodeName, meshName: meshName, isWindows: isWindows, compatibility: compatibility, ScriptPicker: ScriptPicker, detectType: detectType, buildTree: buildTree,
         Library: Library, ShowMore: ShowMore, sortSchedules: sortSchedules, ScheduleTable: ScheduleTable, scheduleActions: scheduleActions,
-        HistoryTable: HistoryTable, NewScriptDialog: NewScriptDialog, SCOPE_ORDER: SCOPE_ORDER, SCOPE_LABEL: SCOPE_LABEL
+        HistoryTable: HistoryTable, NewScriptDialog: NewScriptDialog, VarValue: VarValue, SCOPE_ORDER: SCOPE_ORDER, SCOPE_LABEL: SCOPE_LABEL
     });
 })();

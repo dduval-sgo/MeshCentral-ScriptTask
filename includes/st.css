@@ -52,6 +52,7 @@ body.st-loading { visibility: hidden; }
 .st-status { font-weight: 500; white-space: nowrap; }
 .st-badge-outline { border: 1px solid var(--bs-border-color); color: var(--bs-secondary-color); }
 .st-badge-outline-warning { border: 1px solid var(--bs-warning-border-subtle); background: var(--bs-warning-bg-subtle); color: var(--bs-warning-text-emphasis); }
+.st-mono { font-family: var(--st-mono); font-size: .875rem; }
 .st-type { font-family: var(--st-mono); font-size: .7rem; font-weight: 600; border: 1px solid var(--bs-border-color); color: var(--bs-secondary-color); border-radius: var(--bs-border-radius-sm); padding: 0 .3rem; }
 
 /* Tables */
@@ -218,3 +219,26 @@ body.st-page-server { padding: 0; overflow: hidden; background: var(--bs-body-bg
 .st-batch-link:hover { color: var(--bs-link-hover-color); }
 .st-filter-chip { display: inline-flex; align-items: center; gap: .25rem; font-weight: normal; font-size: .8rem; padding: .35rem .5rem; }
 .st-filter-chip .btn-close { font-size: .55rem; margin-left: .25rem; }
+
+/* Variables */
+.st-secret { display: flex; align-items: baseline; gap: .5rem; }
+.st-secret-mask { font-family: var(--st-mono); letter-spacing: .1em; color: var(--bs-secondary-color); }
+.st-var-more td { border-top-color: transparent; }
+.st-undefined-vars code { color: inherit; }
+
+/* Overview */
+.st-stats { display: grid; grid-template-columns: repeat(auto-fill, minmax(10.5rem, 1fr)); gap: .75rem; }
+.st-stat { color: var(--bs-body-color); transition: border-color .15s; }
+.st-stat:hover, .st-stat:focus-visible { border-color: var(--bs-primary); }
+.st-stat .card-body { padding: .75rem 1rem; }
+.st-stat-label { font-size: .8rem; color: var(--bs-secondary-color); white-space: nowrap; }
+.st-stat-value { font-size: 1.75rem; font-weight: 600; line-height: 1.2; }
+.st-stat-note { font-size: .75rem; color: var(--bs-secondary-color); }
+.st-stat-danger .st-stat-value, .st-stat-danger .st-stat-label .bi { color: var(--bs-danger-text-emphasis); }
+.st-stat-warning .st-stat-value, .st-stat-warning .st-stat-label .bi { color: var(--bs-warning-text-emphasis); }
+.st-overview-grid { display: grid; grid-template-columns: minmax(0, 2fr) minmax(0, 1fr); gap: .75rem; align-items: start; }
+@media (max-width: 991.98px) { .st-overview-grid { grid-template-columns: minmax(0, 1fr); } }
+.st-overview .card-header .bi { opacity: .75; }
+.st-upnext .list-group-item { display: flex; gap: .75rem; align-items: baseline; }
+.st-upnext-time { flex: 0 0 6.5rem; font-size: .875rem; color: var(--bs-secondary-color); }
+.st-upnext-what { min-width: 0; }

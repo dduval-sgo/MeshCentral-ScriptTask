@@ -21,12 +21,14 @@ const REMOTECOMMAND = 0x00020000;
 const RIGHTS = {
     'user//admin': { [LIN]: 0xFFFFFFFF, [WIN]: 0xFFFFFFFF },
     'user//alice': { [LIN]: 8 | REMOTECOMMAND, [WIN]: 8 | REMOTECOMMAND },
-    'user//bob': { [LIN]: 8 }
+    'user//bob': { [LIN]: 8 },
+    'user//carol': { [LIN]: 0xFFFFFFFF }
 };
 const USERS = {
     admin: { _id: 'user//admin', name: 'admin', siteadmin: 0xFFFFFFFF },
     alice: { _id: 'user//alice', name: 'alice', siteadmin: 0 },
-    bob: { _id: 'user//bob', name: 'bob', siteadmin: 0 }
+    bob: { _id: 'user//bob', name: 'bob', siteadmin: 0 },
+    carol: { _id: 'user//carol', name: 'carol', siteadmin: 0, pluginPerms: { manage: true } } // a manager who only sees LIN
 };
 
 const contexts = [];
@@ -54,7 +56,8 @@ function createPlugin() {
                 if (r == null) { cb(null, 0, false); return; }
                 cb({ _id: nodeId, meshid: MESH, name: nodeId }, r, true);
             },
-            CreateNodeDispatchTargets: function (meshId, nodeId) { return ['*', meshId, nodeId]; }
+            CreateNodeDispatchTargets: function (meshId, nodeId) { return ['*', meshId, nodeId]; },
+            IsMeshViewable: function (user, meshId) { return meshId == MESH && user._id != 'user//carol' && Object.keys(RIGHTS[user._id] || {}).length > 0; }
         },
         db: { Get: function (id, cb) { cb(null, [{ _id: id, meshid: MESH }]); } },
         DispatchEvent: function (targets, source, ev) { events.push({ targets: targets, ev: ev }); },
@@ -68,6 +71,7 @@ function createPlugin() {
         getPluginPermissions: function (name) { return registered[name] ? { defaults: {} } : null; },
         checkPluginPermission: function (user, name, perm) {
             if (user.siteadmin === 0xFFFFFFFF) return true;
+            if (user.pluginPerms && user.pluginPerms[perm] != null) return user.pluginPerms[perm];
             return registered[name][perm].default == 'allowed';
         }
     };
@@ -322,8 +326,10 @@ test('settings: managers only, validated, and used for Skip', async function () 
     const ctx = createPlugin(); await ready(ctx);
     assert.strictEqual((await rpc(ctx.plugin, 'alice', 'saveSettings', { skipGraceSeconds: 300 })).ok, false);
     assert.strictEqual((await rpc(ctx.plugin, 'admin', 'saveSettings', { skipGraceSeconds: 5, defaultOfflineWindow: 7200 })).ok, false);
-    const saved = await rpc(ctx.plugin, 'admin', 'saveSettings', { skipGraceSeconds: 300, defaultOfflinePolicy: 'window', defaultOfflineWindow: 1800, defaultAnchor: 'actual' });
-    assert.deepStrictEqual(saved.data, { skipGraceSeconds: 300, defaultOfflinePolicy: 'window', defaultOfflineWindow: 1800, defaultAnchor: 'actual' });
+    const valid = { skipGraceSeconds: 300, defaultOfflinePolicy: 'window', defaultOfflineWindow: 1800, defaultAnchor: 'actual', historyDays: 30, staleMinutes: 45 };
+    for (const bad of [{ historyDays: 0 }, { staleMinutes: 2 }, { staleMinutes: 'x' }]) assert.strictEqual((await rpc(ctx.plugin, 'admin', 'saveSettings', Object.assign({}, valid, bad))).ok, false, JSON.stringify(bad));
+    const saved = await rpc(ctx.plugin, 'admin', 'saveSettings', valid);
+    assert.deepStrictEqual(saved.data, valid);
     assert.deepStrictEqual((await rpc(ctx.plugin, 'alice', 'init', { nodeId: LIN })).data.settings, saved.data);
     const start = nowS() + 60;
     const r = await scheduleOn(ctx, 'admin', { recur: 'minutes', interval: 5, startAt: start, offlinePolicy: 'skip' });
@@ -525,4 +531,81 @@ test('saved target sets belong to the manager who saved them', async function ()
     assert.strictEqual((await rpc(p, 'admin', 'targetSets', {})).data.length, 1);
     assert.strictEqual((await rpc(p, 'admin', 'deleteTargetSet', { id: theirs._id })).ok, false);
     assert.deepStrictEqual((await rpc(p, 'admin', 'deleteTargetSet', { id: sets[0]._id })).data, []);
+});
+
+test('variables: secrets are left out of lists, and managers only see variables for devices they can see', async function () {
+    const ctx = createPlugin(); await ready(ctx);
+    const p = ctx.plugin;
+    const sid = (await rpc(p, 'admin', 'addScript', { name: 'Up', filetype: 'bash', content: 'echo #token# #site# #token#' })).data.id;
+    const other = (await rpc(p, 'admin', 'addScript', { name: 'Other', filetype: 'bash', content: 'echo #site#' })).data.id;
+    assert.ok((await rpc(p, 'admin', 'addVar', { name: 'token', scope: 'global', value: 's3cret', secret: true })).ok);
+    assert.ok((await rpc(p, 'admin', 'addVar', { name: 'site', scope: 'mesh', scopeTarget: MESH, value: 'lab' })).ok);
+    assert.ok((await rpc(p, 'admin', 'addVar', { name: 'site', scope: 'node', scopeTarget: WIN, value: 'win' })).ok);
+    assert.ok((await rpc(p, 'admin', 'addVar', { name: 'site', scope: 'script', scopeTarget: sid, value: 'up' })).ok);
+    assert.strictEqual((await rpc(p, 'admin', 'addVar', { name: 'x', scope: 'node', scopeTarget: OTHER, value: '1' })).ok, false, 'a device you can\'t see');
+    assert.strictEqual((await rpc(p, 'admin', 'addVar', { name: 'x', scope: 'script', scopeTarget: 'nope', value: '1' })).ok, false, 'a script that doesn\'t exist');
+
+    let vars = (await rpc(p, 'admin', 'variables')).data;
+    const token = vars.find(v => v.name == 'token');
+    assert.ok(token.secret && !('value' in token), 'secret value left out');
+    assert.strictEqual((await rpc(p, 'admin', 'revealVar', { id: token._id })).data, 's3cret');
+    assert.strictEqual((await rpc(p, 'alice', 'revealVar', { id: token._id })).ok, false);
+    // Editing a secret without a value keeps the value; agents still get it
+    assert.ok((await rpc(p, 'admin', 'editVar', { id: token._id, name: 'token', scope: 'global', secret: true })).ok);
+    assert.strictEqual((await p.db.getVariables({ names: ['token'], scriptId: sid, meshId: MESH, nodeId: LIN }))[0].value, 's3cret');
+    // A plain variable must come with a value
+    const site = vars.find(v => v.scope == 'mesh');
+    assert.strictEqual((await rpc(p, 'admin', 'editVar', { id: site._id, name: 'site', scope: 'mesh', scopeTarget: MESH })).ok, false);
+
+    // Carol manages, but only sees LIN: no group or WIN variables, and can't change them
+    vars = (await rpc(p, 'carol', 'variables')).data;
+    assert.deepStrictEqual(vars.map(v => v.scope).sort(), ['global', 'script']);
+    assert.strictEqual((await rpc(p, 'carol', 'deleteVar', { id: site._id })).ok, false);
+
+    const usage = (await rpc(p, 'admin', 'varUsage')).data;
+    assert.deepStrictEqual([usage.token, usage.site.sort()], [[sid], [sid, other].sort()]);
+
+    // Deleting a script deletes its script variables
+    await rpc(p, 'admin', 'deleteItem', { id: sid });
+    assert.ok(!(await rpc(p, 'admin', 'variables')).data.some(v => v.scope == 'script'));
+});
+
+test('overview: counts, needs attention and up next, for visible devices', async function () {
+    const ctx = createPlugin(); await ready(ctx);
+    const p = ctx.plugin, now = nowS();
+    const up = (await rpc(p, 'admin', 'addScript', { name: 'Up', filetype: 'bash', content: 'uptime' })).data.id;
+    await rpc(p, 'admin', 'runScript', { scriptId: up, nodeIds: [LIN, WIN] });
+    await rpc(p, 'admin', 'addSchedule', { scriptId: up, nodeIds: [LIN], schedule: { recur: 'daily', interval: 1, startAt: now + 600 } });
+    await p.db.addJob({ scriptId: up, scriptName: 'Up', node: OTHER, runBy: 'admin' });
+    const done = async (node, fields) => { const r = await p.db.addJob({ scriptId: up, scriptName: 'Up', node: node, runBy: 'admin' }); await p.db.update(r.insertedId, Object.assign({ dispatchTime: now - 60, completeTime: now - 30 }, fields)); return r.insertedId; };
+    await done(LIN, { returnVal: 'ok' });
+    await done(WIN, { errorVal: 'boom', returnVal: null });
+    await done(LIN, { missed: true, errorVal: 'Missed', returnVal: null });
+    await done(LIN, { errorVal: 'old', returnVal: null, completeTime: now - 3 * 86400 });
+    await done(OTHER, { errorVal: 'hidden', returnVal: null });
+    const stale = await p.db.addJob({ scriptId: up, scriptName: 'Up', node: LIN, runBy: 'admin' });
+    await p.db.update(stale.insertedId, { dispatchTime: now - 3600 });
+
+    assert.strictEqual((await rpc(p, 'alice', 'overview')).ok, false);
+    const o = (await rpc(p, 'admin', 'overview')).data;
+    assert.deepStrictEqual(o.queue, { queued: 0, waiting: 2, scheduled: 1, dispatched: 0, stale: 1, missed: 0 });
+    assert.deepStrictEqual(o.day, { failed: 1, missed: 1, completed: 1 });
+    assert.deepStrictEqual(o.schedules, { active: 1, paused: 0 });
+    assert.deepStrictEqual(o.failures.map(j => j.errorVal).sort(), ['Missed', 'boom']);
+    assert.deepStrictEqual([o.stale.length, o.upNext.length, o.upNext[0].dontQueueUntil], [1, 1, now + 600]);
+});
+
+test('history retention: old runs and their empty batches are deleted', async function () {
+    const ctx = createPlugin(); await ready(ctx);
+    const p = ctx.plugin, now = nowS();
+    const up = (await rpc(p, 'admin', 'addScript', { name: 'Up', filetype: 'bash', content: 'uptime' })).data.id;
+    const b = (await rpc(p, 'admin', 'runScript', { scriptId: up, nodeIds: [LIN, WIN] })).data.batchId;
+    await p.db.scriptFile.updateMany({ type: 'job', batchId: b }, { $set: { dispatchTime: now - 40 * 86400, completeTime: now - 40 * 86400, returnVal: 'x' } });
+    await p.db.scriptFile.updateMany({ type: 'batch', batchId: b }, { $set: { createdAt: now - 40 * 86400 } });
+    const recent = await p.db.addJob({ scriptId: up, scriptName: 'Up', node: LIN });
+    await p.db.update(recent.insertedId, { completeTime: now - 86400, returnVal: 'y' });
+    await rpc(p, 'admin', 'saveSettings', { skipGraceSeconds: 120, defaultOfflinePolicy: 'wait', defaultOfflineWindow: 7200, defaultAnchor: 'slot', historyDays: 30, staleMinutes: 30 });
+    await wait(200);
+    const left = await p.db.scriptFile.find({ type: { $in: ['job', 'batch'] } }).toArray();
+    assert.deepStrictEqual(left.map(d => d.type + ':' + d.returnVal), ['job:y']);
 });

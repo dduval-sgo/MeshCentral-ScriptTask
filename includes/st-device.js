@@ -108,7 +108,7 @@
                     <thead><tr><th>Name</th><th>Value</th><th>Applies to</th><th class="st-col-actions"><span class="visually-hidden">Actions</span></th></tr></thead>
                     <tbody>${relevant.map(function (v) { return html`<tr key=${v._id} class=${v._overridden ? 'text-body-tertiary' : ''}>
                         <td><code>#${v.name}#</code></td>
-                        <td><div class="st-output-preview">${v.value}</div>${v._overridden ? html`<div class="small">Overridden by a more specific value</div>` : null}</td>
+                        <td><${S.VarValue} variable=${v} />${v._overridden ? html`<div class="small">Overridden by a more specific value</div>` : null}</td>
                         <td>${SCOPE_LABEL[v.scope]}</td>
                         <td class="st-col-actions">
                             <button class="btn btn-sm st-btn-quiet me-1" title="Edit" onClick=${function () { a.editVar(v); }}><${ST.Icon} name="pencil" /><span class="visually-hidden">Edit</span></button>

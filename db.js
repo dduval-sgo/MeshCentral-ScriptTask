@@ -260,10 +260,23 @@ module.exports.CreateDB = function(meshserver) {
         obj.deletePendingJobsForSchedule = function (schedId) {
             return obj.scriptFile.deleteMany( { type: 'job', jobSchedule: schedId, completeTime: null } );
         };
-        obj.deleteOldHistory = function() {
-            var nowTime = Math.floor(new Date() / 1000);
-            var oldTime = nowTime - (86400 * 90); // 90 days
-            return obj.scriptFile.deleteMany( { type: 'job', completeTime: { $lte: oldTime } } );
+        obj.deleteOldHistory = function(days) {
+            var oldTime = Math.floor(new Date() / 1000) - (86400 * (days || 90));
+            return obj.scriptFile.deleteMany( { type: 'job', completeTime: { $lte: oldTime } } ).then(function() {
+                // Batches older than that with nothing left: no runs, and no schedules still making runs
+                return obj.scriptFile.find( { type: 'batch', createdAt: { $lte: oldTime } } ).toArray();
+            }).then(async function(batches) {
+                for (var b of batches) {
+                    var left = await obj.scriptFile.countDocuments( { type: { $in: ['job', 'jobSchedule'] }, batchId: b.batchId } );
+                    if (left == 0) await obj.scriptFile.deleteOne( { _id: b._id } );
+                }
+            });
+        };
+        obj.deleteVariablesForScript = function(scriptId) {
+            return obj.scriptFile.deleteMany( { type: 'variable', scope: 'script', scopeTarget: scriptId } );
+        };
+        obj.getScriptContents = function() {
+            return obj.scriptFile.find( { type: 'script' } ).project( { name: 1, content: 1 } ).toArray();
         };
         obj.addVariable = function(name, scope, scopeTarget, value) {
             var vObj = { 

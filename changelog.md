@@ -34,6 +34,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - Run section on the ScriptTask page: choose a script and devices (search, device group, tag, OS, online/offline, or selected only), then run now or schedule. Devices that can't run the script's type are listed but can't be selected. Selections can be saved as named device sets, per manager.
 - Batches: a run or schedule on several devices is grouped as a batch, optionally named. The batch page shows progress, groups devices by identical output, lists each device's result, exports CSV, and runs again on the devices that failed, missed or didn't run. Scheduled batches are shown one run at a time.
 - Queue, Schedules and History link each row to its batch, and can be filtered to one batch.
+- Overview, the ScriptTask page's new landing section: counts of queued, waiting and running runs, errors, missed and completed runs in the last 24 hours, and active schedules, each opening the matching list. Needs attention lists runs with no result yet and recent errors and missed runs; Up next lists schedules' next runs; recent batches show their progress.
+- Variables section: all variables in one table, with search, a scope filter, where each is used, and a warning for names scripts use that aren't defined. New variables can target any script, device group or device from a list.
+- Secret variables: hidden in lists and in the editor until revealed. Scripts still receive the value.
+- Settings for how long history is kept (default 90 days) and when a run is flagged "No result yet" (default 30 minutes).
 - Server tests (`node --test test/*.test.js`).
 
 ### Fixed
@@ -42,6 +46,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - Script names, variable values and script output are no longer inserted into the page as HTML.
 - Renaming or moving a folder no longer flattens its subfolders. Deleting a folder removes everything below it, with their schedules.
 - Agents can only report results for their own jobs.
+- Managers only see variables for device groups and devices they can see in MeshCentral.
+- Deleting a script also deletes its script variables.
 - Jobs whose script was deleted are closed instead of retried every minute.
 - Editing a Bash script no longer fails on line-ending normalisation.
 - NeDB queries no longer inherit a previous query's sort and limit (a list could silently stop at 200 items).

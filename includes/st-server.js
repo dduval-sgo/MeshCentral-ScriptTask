@@ -17,10 +17,10 @@
 
     // ---- Routing: #/<section>[/<id>][?filters], e.g. #/library/<scriptId> or #/history?status=error&page=2 ----
 
-    var SECTIONS = ['library', 'run', 'batches', 'batch', 'queue', 'schedules', 'history', 'settings'];
+    var SECTIONS = ['overview', 'library', 'run', 'variables', 'batches', 'batch', 'queue', 'schedules', 'history', 'settings'];
     function parseRoute() {
         var m = /^#\/([a-z]+)(?:\/([^/?#]+))?(?:\?(.*))?$/.exec(location.hash);
-        if (m == null || SECTIONS.indexOf(m[1]) === -1) return { section: 'library', id: null, query: {} };
+        if (m == null || SECTIONS.indexOf(m[1]) === -1) return { section: 'overview', id: null, query: {} };
         var query = {};
         if (m[3]) new URLSearchParams(m[3]).forEach(function (v, k) { query[k] = v; });
         return { section: m[1], id: m[2] ? decodeURIComponent(m[2]) : null, query: query };
@@ -109,8 +109,9 @@
         var describeVar = function (n) {
             if (BUILT_INS[n]) return ['Built in: ' + BUILT_INS[n] + '.'];
             var s = varSummary(vars, n, item._id), rows = [];
-            if (s.script) rows.push('This script: ' + s.script.value);
-            if (s.global) rows.push('Global: ' + s.global.value);
+            var shown = function (v) { return v.secret ? '(secret)' : v.value; };
+            if (s.script) rows.push('This script: ' + shown(s.script));
+            if (s.global) rows.push('Global: ' + shown(s.global));
             if (s.mesh) rows.push('Overridden in ' + plural(s.mesh, 'device group'));
             if (s.node) rows.push('Overridden on ' + plural(s.node, 'device'));
             if (rows.length == 0) rows.push('Not defined anywhere. It runs as VAR_NOT_FOUND unless a value is added.');
@@ -190,19 +191,19 @@
                     var s = varSummary(props.vars, n, item._id), undefinedVar = !s.script && !s.global && !s.mesh && !s.node;
                     return html`<tr key=${n}>
                         <td><code>#${n}#</code>${undefinedVar ? html`<div class="small text-warning-emphasis"><${ST.Icon} name="exclamation-triangle-fill" class="me-1" />Not defined. Runs as VAR_NOT_FOUND.</div>` : null}</td>
-                        <td>${s.script ? html`<div class="st-output-preview">${s.script.value}</div>` : html`<span class="text-body-tertiary">—</span>`}</td>
-                        <td>${s.global ? html`<div class="st-output-preview">${s.global.value}</div>` : html`<span class="text-body-tertiary">—</span>`}</td>
+                        <td>${s.script ? html`<${S.VarValue} variable=${s.script} />` : html`<span class="text-body-tertiary">—</span>`}</td>
+                        <td>${s.global ? html`<${S.VarValue} variable=${s.global} />` : html`<span class="text-body-tertiary">—</span>`}</td>
                         <td class="small">${[s.mesh ? plural(s.mesh, 'device group') : '', s.node ? plural(s.node, 'device') : ''].filter(Boolean).join(', ') || html`<span class="text-body-tertiary">None</span>`}</td>
                     </tr>`; })}</tbody>
             </table></div>
-            <div class="form-text">Device group and device values are set from a device's ScriptTask tab. The most specific value wins: device, then group, then script, then global.</div>`}
+            <div class="form-text">Device group and device values are set in <a href="#/variables">Variables</a> or on a device's ScriptTask tab. The most specific value wins: device, then group, then script, then global.</div>`}
             <div class="st-section-title d-flex align-items-center">Script variables
                 <button class="btn btn-sm st-btn-quiet ms-auto" onClick=${function () { a.editVar(null, item); }}><${ST.Icon} name="plus-lg" class="me-1" />New variable</button></div>
             ${props.scriptVars.length == 0 ? html`<${ST.Empty}>No variables are set for this script only.</${ST.Empty}>` : html`
             <div class="table-responsive"><table class="table table-sm st-table">
                 <thead><tr><th>Name</th><th>Value</th><th class="st-col-actions"><span class="visually-hidden">Actions</span></th></tr></thead>
                 <tbody>${props.scriptVars.map(function (v) { return html`<tr key=${v._id}>
-                    <td><code>#${v.name}#</code></td><td><div class="st-output-preview">${v.value}</div></td>
+                    <td><code>#${v.name}#</code></td><td><${S.VarValue} variable=${v} /></td>
                     <td class="st-col-actions">
                         <button class="btn btn-sm st-btn-quiet me-1" title="Edit" onClick=${function () { a.editVar(v, item); }}><${ST.Icon} name="pencil" /><span class="visually-hidden">Edit</span></button>
                         <button class="btn btn-sm btn-outline-danger" title="Delete" onClick=${function () { a.deleteVar(v); }}><${ST.Icon} name="trash3" /><span class="visually-hidden">Delete</span></button>
@@ -257,6 +258,7 @@
         if (query.batch) f.batchId = query.batch;
         if (query.from) f.from = Math.floor(new Date(query.from + 'T00:00').getTime() / 1000);
         if (query.to) f.to = Math.floor(new Date(query.to + 'T23:59:59').getTime() / 1000);
+        if (Number(query.since) > 0) f.from = ST.now() - Number(query.since);
         return f;
     }
 
@@ -292,6 +294,8 @@
                 <input type="search" class="form-control form-control-sm st-filter-wide" placeholder="Search output" aria-label="Search output" value=${text[0].q} onInput=${function (e) { typed('q', e.target.value); }} />
                 <label class="st-filter-date">From <input type="date" class="form-control form-control-sm" value=${q.from || ''} onChange=${function (e) { set('from', e.target.value); }} /></label>
                 <label class="st-filter-date">To <input type="date" class="form-control form-control-sm" value=${q.to || ''} onChange=${function (e) { set('to', e.target.value); }} /></label>` : null}
+            ${q.since ? html`<span class="badge st-badge-outline st-filter-chip"><${ST.Icon} name="clock-history" class="me-1" />Last ${Number(q.since) == 86400 ? '24 hours' : ST.fmt.span(Number(q.since))}
+                <button type="button" class="btn-close" aria-label="Any time" onClick=${function () { set('since', ''); }}></button></span>` : null}
             ${q.batch ? html`<span class="badge st-badge-outline st-filter-chip"><${ST.Icon} name="collection" class="me-1" /><a href=${'#/batch/' + encodeURIComponent(q.batch)}>One batch</a>
                 <button type="button" class="btn-close" aria-label="Show all batches" onClick=${function () { set('batch', ''); }}></button></span>` : null}
             ${active ? html`<button class="btn btn-sm btn-link" onClick=${function () { text[1]({ runBy: '', q: '' }); props.onChange({}); }}>Clear filters</button>` : null}
@@ -836,6 +840,168 @@
         return html`<a href="#/batches" class="st-back" onClick=${function (e) { e.preventDefault(); props.go({ section: 'batches' }); }}><${ST.Icon} name="arrow-left" class="me-1" />Batches</a>`;
     }
 
+    // ---- Variables ----
+
+    var SCOPE_FILTERS = [['', 'All scopes'], ['global', 'Global'], ['script', 'Script'], ['mesh', 'Device group'], ['node', 'Device']];
+
+    // Every variable the manager can see, with where each name is used
+    function VariablesSection(props) {
+        var q = props.query, items = props.items;
+        var usage = useState(null);
+        var text = useState(q.q || ''), timer = useRef(null);
+        var loadUsage = useCallback(function () { return ST.rpc('varUsage').then(usage[1], function () { usage[1]({}); }); }, []);
+        useEffect(function () { loadUsage(); }, []);
+        useEffect(function () { var t = null; return ST.onInvalidate(function (m) { if (m.library || (m.scriptIds && m.scriptIds.length)) { clearTimeout(t); t = setTimeout(loadUsage, 600); } }); }, []);
+        var setQ = function (k, v) { var n = Object.assign({}, q); if (v) n[k] = v; else delete n[k]; props.onQuery(n); };
+        var typed = function (v) { text[1](v); clearTimeout(timer.current); timer.current = setTimeout(function () { setQ('q', v.trim()); }, 300); };
+
+        var scripts = items.filter(function (i) { return i.type == 'script'; });
+        var scriptName = function (id) { var s = scripts.find(function (x) { return x._id == id; }); return s ? s.name : null; };
+        var targetText = function (v) {
+            if (v.scope == 'script') return scriptName(v.scopeTarget) || '(deleted script)';
+            if (v.scope == 'mesh') return meshName(v.scopeTarget);
+            if (v.scope == 'node') return nodeName(v.scopeTarget);
+            return 'All devices';
+        };
+        var vars = props.vars || [];
+        var needle = (q.q || '').toLowerCase();
+        var shown = vars.filter(function (v) {
+            if (q.scope && v.scope != q.scope) return false;
+            if (needle && v.name.toLowerCase().indexOf(needle) < 0 && (v.secret || String(v.value).toLowerCase().indexOf(needle) < 0) && targetText(v).toLowerCase().indexOf(needle) < 0) return false;
+            return true;
+        }).sort(function (a, b) { return a.name.localeCompare(b.name) || (S.SCOPE_ORDER[a.scope] - S.SCOPE_ORDER[b.scope]) || targetText(a).localeCompare(targetText(b)); });
+        // Names scripts use that have no value anywhere (built-ins aside)
+        var defined = {};
+        vars.forEach(function (v) { defined[v.name] = true; });
+        var undefinedNames = usage[0] ? Object.keys(usage[0]).filter(function (n) { return !defined[n] && !BUILT_INS[n]; }).sort() : [];
+        var usedIn = function (name) {
+            var ids = (usage[0] || {})[name] || [];
+            if (usage[0] == null) return null;
+            if (ids.length == 0) return html`<span class="text-body-tertiary small">Not used</span>`;
+            return html`<span class="small">${ids.slice(0, 2).map(function (id, i) { return html`${i ? ', ' : ''}<a href=${'#/library/' + encodeURIComponent(id)}>${scriptName(id) || 'script'}</a>`; })}${ids.length > 2 ? html` <span class="text-body-secondary">+${ids.length - 2} more</span>` : null}</span>`;
+        };
+        var lastName = null;
+        return html`<div class="st-list-page">
+            <div class="st-list-head"><h2 class="h4 mb-0">Variables</h2><span class="text-body-secondary small">Values scripts use as #name#. Device beats device group, group beats script, and script beats global.</span>
+                <button class="btn btn-sm btn-primary ms-auto" onClick=${function () { props.editVar(null); }}><${ST.Icon} name="plus-lg" class="me-1" />New variable</button></div>
+            ${undefinedNames.length ? html`<div class="alert alert-warning py-2 mb-0 small st-undefined-vars">
+                <${ST.Icon} name="exclamation-triangle-fill" class="me-1" />Used in scripts but not defined, so they run as VAR_NOT_FOUND:
+                ${undefinedNames.map(function (n) { return html` <button class="btn btn-sm btn-link p-0 align-baseline" title="Define it" onClick=${function () { props.editVar(null, n); }}><code>#${n}#</code></button>`; })}
+            </div>` : null}
+            <div class="st-filters">
+                <input type="search" class="form-control form-control-sm st-filter-wide" placeholder="Search variables" aria-label="Search variables" value=${text[0]} onInput=${function (e) { typed(e.target.value); }} />
+                <select class="form-select form-select-sm" aria-label="Scope" value=${q.scope || ''} onChange=${function (e) { setQ('scope', e.target.value); }}>
+                    ${SCOPE_FILTERS.map(function (o) { return html`<option value=${o[0]}>${o[1]}</option>`; })}
+                </select>
+            </div>
+            <div class="card"><div class="card-body p-0">
+                ${props.vars == null ? html`<div class="text-center py-5"><${ST.Spinner} /></div>`
+                : shown.length == 0 ? html`<${ST.Empty} icon="braces">${vars.length ? 'No variables match.' : 'No variables yet.'}</${ST.Empty}>`
+                : html`<div class="table-responsive"><table class="table table-sm table-hover st-table mb-0">
+                    <thead><tr><th>Name</th><th>Applies to</th><th>Value</th><th>Used in</th><th class="st-col-actions"><span class="visually-hidden">Actions</span></th></tr></thead>
+                    <tbody>${shown.map(function (v) {
+                        var first = v.name != lastName; lastName = v.name;
+                        return html`<tr key=${v._id} class=${first ? 'st-var-first' : 'st-var-more'}>
+                            <td>${first ? html`<code>#${v.name}#</code>` : html`<span class="visually-hidden">#${v.name}#</span>`}</td>
+                            <td><span class="text-body-secondary small me-1">${S.SCOPE_LABEL[v.scope]}</span>
+                                ${v.scope == 'node' ? html`<${DeviceCell} id=${v.scopeTarget} compact=${true} />`
+                                : v.scope == 'script' && scriptName(v.scopeTarget) ? html`<a href=${'#/library/' + encodeURIComponent(v.scopeTarget)}>${targetText(v)}</a>`
+                                : v.scope == 'global' ? null : targetText(v)}</td>
+                            <td><${S.VarValue} variable=${v} /></td>
+                            <td>${first ? usedIn(v.name) : null}</td>
+                            <td class="st-col-actions"><div class="btn-group btn-group-sm">
+                                <button class="btn st-btn-quiet" title="Edit" onClick=${function () { props.editVar(v); }}><${ST.Icon} name="pencil" /><span class="visually-hidden">Edit</span></button>
+                                <button class="btn btn-outline-danger" title="Delete" onClick=${function () { props.deleteVar(v); }}><${ST.Icon} name="trash3" /><span class="visually-hidden">Delete</span></button>
+                            </div></td>
+                        </tr>`; })}</tbody>
+                </table></div>`}
+            </div></div>
+        </div>`;
+    }
+
+    // ---- Overview ----
+
+    function StatCard(props) {
+        return html`<a href=${props.href} class=${'card st-stat text-decoration-none' + (props.tone ? ' st-stat-' + props.tone : '')}>
+            <div class="card-body">
+                <div class="st-stat-label"><${ST.Icon} name=${props.icon} class="me-1" />${props.label}</div>
+                <div class="st-stat-value">${props.value}</div>
+                ${props.note ? html`<div class="st-stat-note">${props.note}</div>` : null}
+            </div>
+        </a>`;
+    }
+
+    function OverviewSection(props) {
+        var st = useState({ data: null, error: null, batches: null }), state = st[0], set = st[1];
+        var load = useCallback(function () {
+            return Promise.all([ST.rpc('overview'), ST.rpc('batches', { limit: 5 })]).then(function (r) { set({ data: r[0], error: null, batches: r[1].batches }); }, function (e) { set({ data: null, error: e.message, batches: null }); });
+        }, []);
+        useEffect(function () { load(); var iv = setInterval(load, 60000); return function () { clearInterval(iv); }; }, []);
+        useEffect(function () { var t = null; return ST.onInvalidate(function (m) { if ((m.nodeIds && m.nodeIds.length) || (m.scriptIds && m.scriptIds.length)) { clearTimeout(t); t = setTimeout(load, 1000); } }); }, []);
+        if (state.error) return html`<div class="alert alert-danger">${state.error}</div>`;
+        var d = state.data;
+        if (d == null) return html`<div class="text-center py-5"><${ST.Spinner} /></div>`;
+        var openJob = function (j) { ST.rpc('job', { id: j._id }).then(props.openOutput, function (e) { ST.ui.toast(e.message, 'error'); }); };
+        var attention = d.stale.length + d.failures.length;
+        return html`<div class="st-list-page st-overview">
+            <div class="st-list-head"><h2 class="h4 mb-0">Overview</h2><span class="text-body-secondary small">Devices you can see. Counts for errors, missed and completed runs cover the last 24 hours.</span>
+                <button class="btn btn-sm btn-primary ms-auto" onClick=${function () { props.go({ section: 'run' }); }}><${ST.Icon} name="send" class="me-1" />New run</button></div>
+            <div class="st-stats">
+                <${StatCard} href="#/queue" icon="list-task" label="Queued or running" value=${d.queue.queued + d.queue.dispatched + d.queue.stale} note=${d.queue.stale ? d.queue.stale + ' with no result yet' : null} tone=${d.queue.stale ? 'warning' : null} />
+                <${StatCard} href="#/queue?status=waiting" icon="wifi-off" label="Waiting for device" value=${d.queue.waiting} />
+                <${StatCard} href="#/history?status=error&since=86400" icon="exclamation-octagon-fill" label="Errors" value=${d.day.failed} tone=${d.day.failed ? 'danger' : null} />
+                <${StatCard} href="#/history?status=missed&since=86400" icon="calendar-x" label="Missed" value=${d.day.missed} tone=${d.day.missed ? 'warning' : null} />
+                <${StatCard} href="#/history?status=complete&since=86400" icon="check-circle-fill" label="Completed" value=${d.day.completed} />
+                <${StatCard} href="#/schedules?status=active" icon="clock" label="Active schedules" value=${d.schedules.active} note=${d.schedules.paused ? d.schedules.paused + ' paused' : null} />
+            </div>
+            <div class="st-overview-grid">
+                <div class="card">
+                    <div class="card-header"><${ST.Icon} name="exclamation-triangle-fill" class="me-1" />Needs attention${attention ? html`<span class="badge text-bg-secondary ms-2">${attention}</span>` : null}</div>
+                    ${attention == 0 ? html`<${ST.Empty} icon="check-circle-fill">Nothing needs attention: no errors or missed runs in the last 24 hours.</${ST.Empty}>` : html`
+                    <div class="table-responsive"><table class="table table-sm table-hover st-table mb-0">
+                        <tbody>
+                            ${d.stale.map(function (j) { return html`<tr key=${j._id}>
+                                <td><${ST.StatusBadge} status="stale" title=${'Sent over ' + ST.fmt.span(d.staleSeconds) + ' ago without a result.'} /></td>
+                                <td>${j.scriptName}<${BatchLink} id=${j.batchId} /></td><td><${DeviceCell} id=${j.node} compact=${true} /></td>
+                                <td class="text-nowrap text-body-secondary">Sent <${ST.Time} t=${j.dispatchTime} /></td><td></td>
+                            </tr>`; })}
+                            ${d.failures.map(function (j) { var out = ST.jobOutput(j); return html`<tr key=${j._id} class="st-clickable" tabindex="0" onClick=${function (e) { if (!e.target.closest('a')) openJob(j); }} onKeyDown=${function (e) { if (e.key == 'Enter') openJob(j); }}>
+                                <td><${ST.StatusBadge} status=${ST.jobStatus(j, true)} /></td>
+                                <td>${j.scriptName}<${BatchLink} id=${j.batchId} /></td><td><${DeviceCell} id=${j.node} compact=${true} /></td>
+                                <td class="text-nowrap text-body-secondary"><${ST.Time} t=${j.completeTime} /></td>
+                                <td><div class="st-output-preview">${j.missed ? '' : out.split('\n')[0]}</div></td>
+                            </tr>`; })}
+                        </tbody>
+                    </table></div>
+                    <div class="card-footer small"><a href="#/history?status=error&since=86400">All errors</a> · <a href="#/history?status=missed&since=86400">All missed</a></div>`}
+                </div>
+                <div class="card">
+                    <div class="card-header"><${ST.Icon} name="clock" class="me-1" />Up next</div>
+                    ${d.upNext.length == 0 ? html`<${ST.Empty} icon="clock">Nothing scheduled.</${ST.Empty}>` : html`
+                    <ul class="list-group list-group-flush st-upnext">
+                        ${d.upNext.map(function (j) { return html`<li key=${j._id} class="list-group-item">
+                            <span class="st-upnext-time" title=${ST.fmt.time(j.dontQueueUntil)}>${j.dontQueueUntil <= ST.now() ? 'Due ' : ''}<${ST.Time} t=${j.dontQueueUntil} /></span>
+                            <span class="st-upnext-what">${j.scriptName}<${BatchLink} id=${j.batchId} /><span class="d-block small"><${DeviceCell} id=${j.node} compact=${true} /></span>
+                                ${j.state != 'scheduled' ? html`<${ST.StatusBadge} status=${j.state} />` : null}</span>
+                        </li>`; })}
+                    </ul>
+                    <div class="card-footer small"><a href="#/schedules">All schedules</a></div>`}
+                </div>
+            </div>
+            <div class="card">
+                <div class="card-header"><${ST.Icon} name="collection" class="me-1" />Recent batches</div>
+                ${state.batches.length == 0 ? html`<${ST.Empty} icon="collection">No batches yet.</${ST.Empty}>` : html`
+                <div class="table-responsive"><table class="table table-sm table-hover st-table mb-0"><tbody>
+                    ${state.batches.map(function (b) { return html`<tr key=${b.batchId} class="st-clickable" tabindex="0" onClick=${function () { props.go({ section: 'batch', id: b.batchId }); }} onKeyDown=${function (e) { if (e.key == 'Enter') props.go({ section: 'batch', id: b.batchId }); }}>
+                        <td><a href=${'#/batch/' + b.batchId} onClick=${function (e) { e.preventDefault(); }}>${batchTitle(b)}</a><div class="text-body-secondary small">${plural(b.visibleDevices, 'device')} · <${ST.Time} t=${b.createdAt} /></div></td>
+                        <td class="st-col-results"><${StateBar} counts=${b.counts} /></td>
+                    </tr>`; })}
+                </tbody></table></div>
+                <div class="card-footer small"><a href="#/batches">All batches</a></div>`}
+            </div>
+        </div>`;
+    }
+
     // ---- App ----
 
     function App() {
@@ -940,6 +1106,18 @@
                 setDialog(html`<${ST.dialogs.Variable} variable=${v ? Object.assign({}, v, { scopeTargetName: v.scope == 'script' ? 'Script: ' + scriptName(v.scopeTarget) : null }) : null}
                     scope=${v ? null : 'script'} scopes=${['global', 'script']} targets=${{ script: { id: item._id, name: 'Script: ' + item.name } }} onClose=${close} />`);
             },
+            // From the Variables section: any scope, with a target chosen from a list
+            editAnyVar: function (v, name) {
+                var scripts = items.filter(function (i) { return i.type == 'script'; }).sort(function (x, y) { return x.path.localeCompare(y.path) || x.name.localeCompare(y.name); });
+                var options = {
+                    script: scripts.map(function (sc) { return [sc._id, sc.path + ' / ' + sc.name]; }),
+                    mesh: Object.keys(host.meshes || {}).map(function (k) { return host.meshes[k]; }).filter(function (m) { return m.mtype == 2; }).sort(function (x, y) { return x.name.localeCompare(y.name); }).map(function (m) { return [m._id, m.name]; }),
+                    node: agentNodes().sort(function (x, y) { return x.name.localeCompare(y.name); }).map(function (n) { return [n._id, n.name + ' (' + meshName(n.meshid) + ')']; })
+                };
+                // A target that isn't in the lists (a deleted script, a device not loaded here) stays selectable when editing
+                if (v && v.scope != 'global' && !options[v.scope].some(function (o) { return o[0] == v.scopeTarget; })) options[v.scope].unshift([v.scopeTarget, v.scope == 'script' ? '(deleted script)' : v.scope == 'mesh' ? meshName(v.scopeTarget) : nodeName(v.scopeTarget)]);
+                setDialog(html`<${ST.dialogs.Variable} variable=${v} name=${name} options=${options} onClose=${close} />`);
+            },
             deleteVar: function (v) {
                 ST.ui.confirm({ title: 'Delete #' + v.name + '#?', body: html`<p class="mb-0">Scripts that use it will get the next most specific value, or VAR_NOT_FOUND.</p>`, confirmText: 'Delete', danger: true })
                 .then(function (ok) { if (ok) ST.ui.attempt(ST.rpc('deleteVar', { id: v._id }), 'Variable deleted.'); });
@@ -955,7 +1133,7 @@
         if (!state.init.caps.manage) return html`<div class="alert alert-warning m-3"><${ST.Icon} name="lock" class="me-1" />The ScriptTask page is for ScriptTask managers. You can run library scripts from a device's ScriptTask tab.</div>`;
 
         var section = route[0].section;
-        var nav = [['library', 'Library', 'folder2-open'], ['run', 'Run', 'send'], ['batches', 'Batches', 'collection'], ['queue', 'Queue', 'list-task'], ['schedules', 'Schedules', 'clock'], ['history', 'History', 'clock-history'], ['settings', 'Settings', 'gear']];
+        var nav = [['overview', 'Overview', 'speedometer2'], ['library', 'Library', 'folder2-open'], ['run', 'Run', 'send'], ['batches', 'Batches', 'collection'], ['queue', 'Queue', 'list-task'], ['schedules', 'Schedules', 'clock'], ['history', 'History', 'clock-history'], ['variables', 'Variables', 'braces'], ['settings', 'Settings', 'gear']];
         var navSection = (section == 'batch') ? 'batches' : section;
         var setQuery = function (q) { go({ section: section, id: null, query: q }); };
         return html`<div class="st-shell">
@@ -983,6 +1161,8 @@
                 </div>` : null}
                 ${section == 'run' ? html`<${RunSection} key=${'run' + (route[0].query.script || '') + (route[0].query.devices || '')} query=${route[0].query} items=${items} userId=${state.init.user.id}
                     settings=${state.init.settings} go=${go} setDialog=${setDialog} close=${close} />` : null}
+                ${section == 'overview' ? html`<${OverviewSection} go=${go} openOutput=${actions.openOutput} />` : null}
+                ${section == 'variables' ? html`<${VariablesSection} query=${route[0].query} items=${items} vars=${state.vars} onQuery=${setQuery} editVar=${actions.editAnyVar} deleteVar=${actions.deleteVar} />` : null}
                 ${section == 'batches' ? html`<${BatchesSection} query=${route[0].query} go=${go} />` : null}
                 ${section == 'batch' ? html`<${BatchView} key=${route[0].id} id=${route[0].id} query=${route[0].query} items=${items} go=${go} openOutput=${actions.openOutput} />` : null}
                 ${section == 'queue' ? html`<${QueueSection} query=${route[0].query} items=${items} onQuery=${setQuery} />` : null}

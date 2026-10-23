@@ -174,14 +174,14 @@
     ST.SettingsForm = function (props) {
         var st = props.settings;
         var w = splitSpan(st.defaultOfflineWindow);
-        var s = useState({ grace: Math.round(st.skipGraceSeconds / 60), offline: st.defaultOfflinePolicy, windowN: w[0], windowUnit: w[1], anchor: st.defaultAnchor });
+        var s = useState({ grace: Math.round(st.skipGraceSeconds / 60), offline: st.defaultOfflinePolicy, windowN: w[0], windowUnit: w[1], anchor: st.defaultAnchor, historyDays: st.historyDays, staleMinutes: st.staleMinutes });
         var f = s[0], setF = s[1];
         var busy = useState(false), err = useState(null);
         var set = function (k, v) { setF(function (o) { var n = Object.assign({}, o); n[k] = v; return n; }); };
         var submit = function (e) {
             e.preventDefault();
             busy[1](true);
-            ST.rpc('saveSettings', { skipGraceSeconds: Math.round(Number(f.grace) * 60), defaultOfflinePolicy: f.offline, defaultOfflineWindow: Math.round(Number(f.windowN) * f.windowUnit), defaultAnchor: f.anchor })
+            ST.rpc('saveSettings', { skipGraceSeconds: Math.round(Number(f.grace) * 60), defaultOfflinePolicy: f.offline, defaultOfflineWindow: Math.round(Number(f.windowN) * f.windowUnit), defaultAnchor: f.anchor, historyDays: Number(f.historyDays), staleMinutes: Number(f.staleMinutes) })
             .then(function (saved) { busy[1](false); ST.ui.toast('Settings saved.'); props.onSaved(saved); }, function (ex) { busy[1](false); err[1](ex.message); });
         };
         return html`<form id="st-settings" class="st-settings" onSubmit=${submit}>
@@ -189,6 +189,17 @@
                     <label class="form-label" for="st-grace">Skip grace period</label>
                     <div class="input-group w-auto"><input type="number" min="1" max="60" step="1" class="form-control" id="st-grace" value=${f.grace} onInput=${function (e) { set('grace', e.target.value); }} /><span class="input-group-text">minutes</span></div>
                     <div class="form-text">Schedules set to Skip still run if their device comes online this long after the scheduled time. It applies to all schedules.</div>
+                </div>
+                <div class="st-section-title">Queue and history</div>
+                <div class="mb-3">
+                    <label class="form-label" for="st-stale">Flag runs with no result after</label>
+                    <div class="input-group w-auto"><input type="number" min="5" max="1440" step="1" class="form-control" id="st-stale" value=${f.staleMinutes} onInput=${function (e) { set('staleMinutes', e.target.value); }} /><span class="input-group-text">minutes</span></div>
+                    <div class="form-text">Runs sent to a device this long ago without a result show as "No result yet". Raise it if some scripts take longer.</div>
+                </div>
+                <div class="mb-3">
+                    <label class="form-label" for="st-history-days">Keep history for</label>
+                    <div class="input-group w-auto"><input type="number" min="1" max="3650" step="1" class="form-control" id="st-history-days" value=${f.historyDays} onInput=${function (e) { set('historyDays', e.target.value); }} /><span class="input-group-text">days</span></div>
+                    <div class="form-text">Finished runs older than this are deleted, with their output.</div>
                 </div>
                 <div class="st-section-title">Defaults for new schedules</div>
                 <div class="row g-3">
@@ -261,27 +272,39 @@
 
     var SCOPES = [['global', 'Global (all devices)'], ['script', 'This script'], ['mesh', 'This device group'], ['node', 'This device']];
 
-    // props: variable (optional, for editing), targets: { script: {id,name}|null, mesh: {id,name}, node: {id,name} }, scopes (optional list), onClose
+    // props: variable (optional, for editing), name and scope (defaults for a new one), scopes (optional list), onClose, and either
+    // targets: { script: {id,name}, mesh: {id,name}, node: {id,name} } (fixed targets), or
+    // options: { script: [[id,name]], mesh: [...], node: [...] } (choose the target from a list)
     ST.dialogs.Variable = function (props) {
         var v = props.variable;
-        var s = useState({ name: v ? v.name : '', scope: v ? v.scope : (props.scope || 'global'), value: v ? v.value : '' }), f = s[0], setF = s[1];
+        var s = useState({ name: v ? v.name : (props.name || ''), scope: v ? v.scope : (props.scope || 'global'), value: v ? (v.value || '') : '', secret: v ? v.secret === true : false, target: v ? v.scopeTarget : null }), f = s[0], setF = s[1];
         var busy = useState(false), err = useState(null);
         var set = function (k, val) { setF(function (o) { var n = Object.assign({}, o); n[k] = val; return n; }); };
+        var picking = props.options != null;
         // When editing, keep the variable's existing target unless its scope changes
         var target = function (scope) {
+            if (picking) {
+                var id = (v && v.scope == scope && f.target == null) ? v.scopeTarget : f.target;
+                var opt = (props.options[scope] || []).find(function (o) { return o[0] == id; });
+                return opt ? { id: opt[0], name: opt[1] } : null;
+            }
             if (v && v.scope == scope) return { id: v.scopeTarget, name: v.scopeTargetName };
             return props.targets[scope] || null;
         };
+        // An existing secret's value isn't sent to the page; leaving it empty keeps it
+        var keepSecret = v != null && v.secret === true && f.value === '';
         var submit = function (e) {
             e.preventDefault();
             var t = target(f.scope);
-            if (f.scope != 'global' && t == null) { err[1]('Select a script in the library first.'); return; }
+            if (f.scope != 'global' && t == null) { err[1](picking ? 'Choose what this variable applies to.' : 'Select a script in the library first.'); return; }
             busy[1](true);
-            var args = { name: f.name, scope: f.scope, scopeTarget: (f.scope == 'global') ? null : t.id, value: f.value };
+            var args = { name: f.name, scope: f.scope, scopeTarget: (f.scope == 'global') ? null : t.id, secret: f.secret };
+            if (!keepSecret) args.value = f.value;
             if (v) args.id = v._id;
             ST.rpc(v ? 'editVar' : 'addVar', args).then(function () { busy[1](false); props.onClose(); }, function (ex) { busy[1](false); err[1](ex.message); });
         };
         var t = target(f.scope);
+        var TARGET_LABEL = { script: 'Script', mesh: 'Device group', node: 'Device' };
         return html`<${ST.Modal} title=${v ? 'Edit variable' : 'New variable'} onClose=${props.onClose} footer=${html`
             <button type="button" class="btn btn-secondary" onClick=${props.onClose}>Cancel</button>
             <button type="submit" form="st-var" class="btn btn-primary" disabled=${busy[0] || !f.name.trim()}>Save</button>`}>
@@ -293,14 +316,24 @@
                 </div>
                 <div class="mb-3">
                     <label class="form-label" for="st-var-scope">Applies to</label>
-                    <select id="st-var-scope" class="form-select" value=${f.scope} onChange=${function (e) { set('scope', e.target.value); }}>
-                        ${SCOPES.filter(function (sc) { return props.scopes == null || props.scopes.indexOf(sc[0]) >= 0; }).map(function (sc) { return html`<option value=${sc[0]}>${sc[1]}</option>`; })}
+                    <select id="st-var-scope" class="form-select" value=${f.scope} onChange=${function (e) { set('scope', e.target.value); set('target', null); }}>
+                        ${(picking ? [['global', 'All devices'], ['script', 'A script'], ['mesh', 'A device group'], ['node', 'A device']] : SCOPES).filter(function (sc) { return props.scopes == null || props.scopes.indexOf(sc[0]) >= 0; }).map(function (sc) { return html`<option value=${sc[0]}>${sc[1]}</option>`; })}
                     </select>
-                    ${f.scope != 'global' ? html`<div class="form-text">${t ? t.name : 'No script selected.'}</div>` : null}
+                    ${f.scope == 'global' ? null : picking ? html`
+                        <select id="st-var-target" class="form-select mt-2" aria-label=${TARGET_LABEL[f.scope]} value=${t ? t.id : ''} onChange=${function (e) { set('target', e.target.value); }}>
+                            <option value="">Choose a ${TARGET_LABEL[f.scope].toLowerCase()}…</option>
+                            ${(props.options[f.scope] || []).map(function (o) { return html`<option value=${o[0]}>${o[1]}</option>`; })}
+                        </select>`
+                    : html`<div class="form-text">${t ? t.name : 'No script selected.'}</div>`}
                 </div>
-                <div class="mb-1">
+                <div class="mb-2">
                     <label class="form-label" for="st-var-value">Value</label>
-                    <textarea id="st-var-value" class="form-control" rows="3" value=${f.value} onInput=${function (e) { set('value', e.target.value); }}></textarea>
+                    <textarea id="st-var-value" class="form-control st-mono" rows="3" value=${f.value} placeholder=${(v && v.secret) ? 'Leave empty to keep the current value' : ''} onInput=${function (e) { set('value', e.target.value); }}></textarea>
+                </div>
+                <div class="form-check mb-1">
+                    <input class="form-check-input" type="checkbox" id="st-var-secret" checked=${f.secret} onChange=${function (e) { set('secret', e.target.checked); }} />
+                    <label class="form-check-label" for="st-var-secret">Secret</label>
+                    <div class="form-text mt-0">Hidden in lists and the editor until revealed. Scripts still receive the value, and their output may show it.</div>
                 </div>
                 <div class="form-text">When names match, device beats group, group beats script, and script beats global.</div>
                 ${err[0] ? html`<div class="alert alert-danger py-2 mt-3 mb-0">${err[0]}</div>` : null}
