@@ -6,6 +6,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 ## [Known Issues]
 - None. Please feel free to submit an issue via [GitHub](https://github.com/dduval-sgo/MeshCentral-ScriptTask/issues) if you find anything.
 
+## [0.1.1] - 2026-10-23
+### Fixed
+- Installing, reinstalling or upgrading the plugin without restarting MeshCentral could keep the previous version's code running, because MeshCentral's module cache isn't cleared. ScriptTask now compares its version with the one on disk and loads the new files itself.
+- A copy of the plugin that has been replaced (by a reload, reinstall or upgrade), disabled or removed stops checking the queue, so two copies never send the same runs.
+
+### Changed
+- Readme: restart MeshCentral after installing, upgrading or removing the plugin.
+
 ## [0.1.0] - 2026-10-23
 ### Changed
 - Redesigned for MeshCentral's Modern UI, with Bootstrap and Preact. Pages follow MeshCentral's theme and light/dark mode, including live switching. Classic UI is no longer supported.

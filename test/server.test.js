@@ -45,7 +45,8 @@ test.after(function () {
     });
 });
 
-function createPlugin() {
+// pluginDir: load the plugin from a copy of its files instead of this checkout
+function createPlugin(pluginDir) {
     const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'scripttask-test-'));
     const events = [];
     const meshServer = {
@@ -80,7 +81,7 @@ function createPlugin() {
             return registered[name][perm].default == 'allowed';
         }
     };
-    const plugin = require('../scripttask.js').scripttask(pluginHandler);
+    const plugin = require(path.join(pluginDir || path.join(__dirname, '..'), 'scripttask.js')).scripttask(pluginHandler);
     plugin.server_startup();
     clearInterval(plugin.intervalTimer);
     const ctx = { plugin, events, dataDir, registered };
@@ -622,4 +623,44 @@ test('history retention: old runs and their empty batches are deleted', async fu
     await wait(200);
     const left = await p.db.scriptFile.find({ type: { $in: ['job', 'batch'] } }).toArray();
     assert.deepStrictEqual(left.map(d => d.type + ':' + d.returnVal), ['job:y']);
+});
+
+test('upgrading in place without a restart loads the new files and stops the old copy', async function () {
+    // A copy of the plugin, loaded once, then "upgraded" on disk as MeshCentral's Upgrade button does
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'scripttask-plugin-'));
+    for (const f of ['scripttask.js', 'db.js', 'nemongo.js', 'schedule.js', 'config.json']) fs.copyFileSync(path.join(__dirname, '..', f), path.join(dir, f));
+    const ctx = createPlugin(dir); await ready(ctx);
+    const old = ctx.plugin;
+    old.resetQueueTimer();
+    const pluginHandler = old.parent;
+    pluginHandler.plugins = { scripttask: old };
+
+    const config = JSON.parse(fs.readFileSync(path.join(dir, 'config.json'), 'utf8'));
+    fs.writeFileSync(path.join(dir, 'config.json'), JSON.stringify(Object.assign(config, { version: '99.0.0' })));
+    fs.writeFileSync(path.join(dir, 'scripttask.js'), fs.readFileSync(path.join(dir, 'scripttask.js'), 'utf8').replace('var obj = {};', 'var obj = { upgraded: true };'));
+
+    // require() still returns the cached old module; its factory notices and builds from the new files
+    const cached = require(path.join(dir, 'scripttask.js'));
+    const fresh = cached.scripttask(pluginHandler);
+    assert.strictEqual(fresh.upgraded, true, 'built from the new scripttask.js');
+    assert.strictEqual(fresh.version, '99.0.0');
+    assert.strictEqual(old.stopped, true, 'the old copy stopped checking the queue');
+    assert.notStrictEqual(require(path.join(dir, 'scripttask.js')), cached, 'the cache now holds the new file');
+    // Building it again without a version change doesn't reload
+    assert.strictEqual(require(path.join(dir, 'scripttask.js')).scripttask(pluginHandler).upgraded, true);
+    contexts.push({ plugin: fresh, dataDir: fs.mkdtempSync(path.join(os.tmpdir(), 'scripttask-test-')) });
+    fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test('a plugin that MeshCentral disabled or removed stops checking the queue', async function () {
+    const ctx = createPlugin(); await ready(ctx);
+    const p = ctx.plugin;
+    p.parent.plugins = { scripttask: p };
+    assert.strictEqual(p.isActive(), true);
+    delete p.parent.plugins.scripttask;
+    await p.queueRun();
+    assert.strictEqual(p.stopped, true);
+    const before = p.intervalTimer;
+    p.resetQueueTimer();
+    assert.strictEqual(p.intervalTimer, before, 'no new queue timer once stopped');
 });

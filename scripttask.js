@@ -9,8 +9,30 @@
 
 "use strict";
 
+// MeshCentral loads plugins with require(), and removing, reinstalling or upgrading a plugin doesn't clear Node's
+// module cache. Until MeshCentral restarts, require() can return the previous version of this file. So the factory
+// compares this code's version with the one on disk; when they differ, it drops the plugin's files from the cache
+// and builds the plugin from the new files instead.
+var path = require('path');
+function versionOnDisk() {
+    try { return JSON.parse(require('fs').readFileSync(path.join(__dirname, 'config.json'), 'utf8')).version; } catch (e) { return null; }
+}
+var LOADED_VERSION = versionOnDisk();
+var INSTANCE_KEY = Symbol.for('meshcentral.plugin.scripttask.instance');
+
 module.exports.scripttask = function (parent) {
+    var onDisk = versionOnDisk();
+    if (onDisk != null && LOADED_VERSION != null && onDisk != LOADED_VERSION) {
+        console.log('PLUGIN: ScriptTask: loading version ' + onDisk + ' in place of ' + LOADED_VERSION + '. Restart MeshCentral when convenient.');
+        Object.keys(require.cache).forEach(function (k) { if (k.startsWith(__dirname + path.sep)) delete require.cache[k]; });
+        return require(path.join(__dirname, 'scripttask.js')).scripttask(parent);
+    }
+    // An earlier instance in this process (the plugin was reloaded, reinstalled or upgraded without a restart) stops
+    // checking the queue, so two copies never send the same runs
+    if (global[INSTANCE_KEY] && typeof global[INSTANCE_KEY].shutdown == 'function') global[INSTANCE_KEY].shutdown();
+
     var obj = {};
+    global[INSTANCE_KEY] = obj;
     obj.parent = parent;
     obj.meshServer = parent.parent;
     obj.db = null;
@@ -18,7 +40,8 @@ module.exports.scripttask = function (parent) {
     obj.debug = obj.meshServer.debug;
     obj.VIEWS = __dirname + '/views/';
     obj.INCLUDES = __dirname + '/includes/';
-    obj.version = require(__dirname + '/config.json').version;
+    obj.version = LOADED_VERSION;
+    obj.stopped = false;
     obj.exports = [
         'onDeviceRefreshEnd',
         'getBus',
@@ -57,8 +80,20 @@ module.exports.scripttask = function (parent) {
     obj.timerSeconds = null;
     obj.resetQueueTimer = function() {
         clearInterval(obj.intervalTimer);
+        if (obj.stopped) return;
         obj.timerSeconds = obj.settingsCache ? obj.settingsCache.queueIntervalSeconds : obj.SETTINGS_DEFAULTS.queueIntervalSeconds;
         obj.intervalTimer = setInterval(obj.queueRun, obj.timerSeconds * 1000);
+    };
+
+    obj.shutdown = function() {
+        obj.stopped = true;
+        clearInterval(obj.intervalTimer);
+    };
+    // Disabling or removing the plugin drops it from MeshCentral's list without telling it; stop when that happens
+    obj.isActive = function() {
+        if (obj.stopped) return false;
+        if (parent.plugins != null && parent.plugins.scripttask !== obj) { obj.shutdown(); return false; }
+        return true;
     };
 
     obj.server_startup = function() {
@@ -101,6 +136,7 @@ module.exports.scripttask = function (parent) {
     // ---- Queue ----
 
     obj.queueRun = async function() {
+        if (!obj.isActive()) return;
         try { await obj.expireJobs(); } catch (e) { console.log('PLUGIN: ScriptTask: Could not expire jobs: ', e); }
         var onlineAgents = Object.keys(obj.meshServer.webserver.wsagents);
         //obj.debug('ScriptTask', 'Queue Running', Date().toLocaleString(), 'Online agents: ', onlineAgents);
