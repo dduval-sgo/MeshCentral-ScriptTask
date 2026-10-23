@@ -72,7 +72,9 @@
                 eol[1](sc.filetype == 'bash' ? 'lf' : (crlf || content.length == 0) ? 'crlf' : 'lf');
                 text[1](lf); filetype[1](sc.filetype); cursor[1]({ line: 1, col: 1, lines: lf.split('\n').length });
                 loaded[1]({ content: lf, filetype: sc.filetype, eol: (sc.filetype == 'bash') ? 'lf' : (crlf || content.length == 0) ? 'crlf' : 'lf' });
-                ST.editor.load().then(function (E) { indent[1](E.detectIndent(lf, sc.filetype == 'bash' ? '2' : '4')); }, function () { });
+                var defaults = props.settings || {};
+                var fallback = { ps1: defaults.indentPs1, bat: defaults.indentBat, bash: defaults.indentBash }[sc.filetype] || (sc.filetype == 'bash' ? '2' : '4');
+                ST.editor.load().then(function (E) { indent[1](E.detectIndent(lf, fallback)); }, function () { });
             }, function (e) { ST.ui.toast(e.message, 'error'); });
             loadData();
         }, [item._id]);
@@ -238,7 +240,7 @@
 
     // ---- Queue, Schedules and History ----
 
-    var PAGE_SIZE = 50;
+    var PAGE_SIZE = 50; // From Settings, set when the page loads and when settings change
     var STATUS_OPTIONS = {
         queue: [['', 'Any status'], ['queued', 'Queued'], ['waiting', 'Waiting for device'], ['scheduled', 'Scheduled'], ['dispatched', 'Running'], ['stale', 'No result yet'], ['missed', 'Missed']],
         schedules: [['', 'Active and paused'], ['active', 'Active'], ['paused', 'Paused']],
@@ -332,7 +334,7 @@
     function useServerList(method, query) {
         var st = useState({ loading: true, error: null, total: 0, rows: [] }), state = st[0], set = st[1];
         var page = Math.max(1, Number(query.page) || 1);
-        var key = JSON.stringify(query);
+        var key = JSON.stringify(query) + PAGE_SIZE;
         var load = useCallback(function () {
             return ST.rpc(method, { filters: serverFilters(query), skip: (page - 1) * PAGE_SIZE, limit: PAGE_SIZE }).then(function (r) {
                 set({ loading: false, error: null, total: r.total, rows: r.jobs || r.schedules || [], extra: r });
@@ -686,7 +688,7 @@
         var st = useState({ loading: true, error: null, total: 0, rows: [] }), state = st[0], set = st[1];
         var load = useCallback(function () {
             return ST.rpc('batches', { skip: (page - 1) * PAGE_SIZE, limit: PAGE_SIZE }).then(function (r) { set({ loading: false, error: null, total: r.total, rows: r.batches }); }, function (e) { set({ loading: false, error: e.message, total: 0, rows: [] }); });
-        }, [page]);
+        }, [page, PAGE_SIZE]);
         useEffect(function () { load(); }, [load]);
         useEffect(function () { var timer = null; return ST.onInvalidate(function (m) { if ((m.nodeIds && m.nodeIds.length) || (m.scriptIds && m.scriptIds.length)) { clearTimeout(timer); timer = setTimeout(load, 600); } }); }, [load]);
         var open = function (b) { props.go({ section: 'batch', id: b.batchId }); };
@@ -1037,7 +1039,15 @@
             return ST.onInvalidate(function (m) {
                 if (m.library) due.library = true;
                 if (m.variables) due.vars = true;
-                if (timer == null) timer = setTimeout(function () { timer = null; if (due.library) loadTree().catch(function () { }); if (due.vars) loadVars().catch(function () { }); due = {}; }, 250);
+                if (m.settings) due.settings = true;
+                if (timer == null) timer = setTimeout(function () {
+                    timer = null;
+                    if (due.library) loadTree().catch(function () { });
+                    if (due.vars) loadVars().catch(function () { });
+                    // Another manager changed settings
+                    if (due.settings) ST.rpc('init', {}).then(function (init) { setState(function (o) { return Object.assign({}, o, { init: Object.assign({}, o.init, { settings: init.settings }) }); }); }, function () { });
+                    due = {};
+                }, 250);
             });
         }, []);
         useEffect(function () { if (state.init || state.error) document.body.classList.remove('st-loading'); }, [state.init, state.error]);
@@ -1130,6 +1140,7 @@
         }
         if (state.error) return html`<div class="alert alert-danger m-3"><${ST.Icon} name="exclamation-triangle-fill" class="me-1" />${state.error}</div>`;
         if (state.init == null) return null;
+        PAGE_SIZE = state.init.settings.pageSize || 50;
         if (!state.init.caps.manage) return html`<div class="alert alert-warning m-3"><${ST.Icon} name="lock" class="me-1" />The ScriptTask page is for ScriptTask managers. You can run library scripts from a device's ScriptTask tab.</div>`;
 
         var section = route[0].section;
@@ -1156,7 +1167,7 @@
                         : selected == null ? html`<div class="st-tab-body"><${ST.Empty} icon="file-earmark-code">Choose a script or folder in the library, or create one.
                             <div class="mt-3"><button class="btn btn-primary" onClick=${actions.newScript}><${ST.Icon} name="file-earmark-plus" class="me-1" />New script</button></div></${ST.Empty}></div>`
                         : selected.type == 'folder' ? html`<${FolderPanel} key=${selected._id} item=${selected} items=${items} actions=${actions} />`
-                        : html`<${ScriptWorkspace} key=${selected._id} item=${selected} vars=${state.vars} actions=${actions} scheduleActions=${scheduleActions} onDirty=${function (d) { dirty.current = d; }} />`}
+                        : html`<${ScriptWorkspace} key=${selected._id} item=${selected} vars=${state.vars} settings=${state.init.settings} actions=${actions} scheduleActions=${scheduleActions} onDirty=${function (d) { dirty.current = d; }} />`}
                     </div>
                 </div>` : null}
                 ${section == 'run' ? html`<${RunSection} key=${'run' + (route[0].query.script || '') + (route[0].query.devices || '')} query=${route[0].query} items=${items} userId=${state.init.user.id}

@@ -326,10 +326,13 @@ test('settings: managers only, validated, and used for Skip', async function () 
     const ctx = createPlugin(); await ready(ctx);
     assert.strictEqual((await rpc(ctx.plugin, 'alice', 'saveSettings', { skipGraceSeconds: 300 })).ok, false);
     assert.strictEqual((await rpc(ctx.plugin, 'admin', 'saveSettings', { skipGraceSeconds: 5, defaultOfflineWindow: 7200 })).ok, false);
-    const valid = { skipGraceSeconds: 300, defaultOfflinePolicy: 'window', defaultOfflineWindow: 1800, defaultAnchor: 'actual', historyDays: 30, staleMinutes: 45 };
-    for (const bad of [{ historyDays: 0 }, { staleMinutes: 2 }, { staleMinutes: 'x' }]) assert.strictEqual((await rpc(ctx.plugin, 'admin', 'saveSettings', Object.assign({}, valid, bad))).ok, false, JSON.stringify(bad));
+    const valid = { skipGraceSeconds: 300, defaultOfflinePolicy: 'window', defaultOfflineWindow: 1800, defaultAnchor: 'actual', historyDays: 30, staleMinutes: 45,
+        queueIntervalSeconds: 30, pageSize: 100, scheduleStepMinutes: 15, indentPs1: 'tab', indentBat: '2', indentBash: '4' };
+    for (const bad of [{ historyDays: 0 }, { staleMinutes: 2 }, { staleMinutes: 'x' }, { queueIntervalSeconds: 5 }, { pageSize: 500 }, { scheduleStepMinutes: 7 }, { indentBash: '3' }]) assert.strictEqual((await rpc(ctx.plugin, 'admin', 'saveSettings', Object.assign({}, valid, bad))).ok, false, JSON.stringify(bad));
     const saved = await rpc(ctx.plugin, 'admin', 'saveSettings', valid);
     assert.deepStrictEqual(saved.data, valid);
+    assert.strictEqual(ctx.plugin.timerSeconds, 30, 'the queue check uses the new interval');
+    clearInterval(ctx.plugin.intervalTimer);
     assert.deepStrictEqual((await rpc(ctx.plugin, 'alice', 'init', { nodeId: LIN })).data.settings, saved.data);
     const start = nowS() + 60;
     const r = await scheduleOn(ctx, 'admin', { recur: 'minutes', interval: 5, startAt: start, offlinePolicy: 'skip' });

@@ -51,9 +51,12 @@ module.exports.scripttask = function (parent) {
     obj.malix_triggerFields_scripttask_runscript = function() {
 
     }
+    // The queue check runs on an interval from Settings (every minute by default)
+    obj.timerSeconds = null;
     obj.resetQueueTimer = function() {
-        clearTimeout(obj.intervalTimer);
-        obj.intervalTimer = setInterval(obj.queueRun, 1 * 60 * 1000); // every minute
+        clearInterval(obj.intervalTimer);
+        obj.timerSeconds = obj.settingsCache ? obj.settingsCache.queueIntervalSeconds : obj.SETTINGS_DEFAULTS.queueIntervalSeconds;
+        obj.intervalTimer = setInterval(obj.queueRun, obj.timerSeconds * 1000);
     };
 
     obj.server_startup = function() {
@@ -166,6 +169,8 @@ module.exports.scripttask = function (parent) {
         })
         .then(() => {
             obj.cleanHistory();
+            // Settings load after startup: pick up a non-default interval on the first check
+            if (obj.settingsCache && obj.settingsCache.queueIntervalSeconds != obj.timerSeconds) obj.resetQueueTimer();
             return obj.ensureScheduleJobs().catch(e => console.log('PLUGIN: ScriptTask: Error managing job schedules: ', e));
         })
         .catch(e => { console.log('PLUGIN: ScriptTask: Queue Run Error: ', e); });
@@ -219,7 +224,9 @@ module.exports.scripttask = function (parent) {
     // Slots that passed while a device was offline are never run as a backlog.
 
     obj.Schedule = require(__dirname + '/schedule.js');
-    obj.SETTINGS_DEFAULTS = { skipGraceSeconds: 120, defaultOfflinePolicy: 'wait', defaultOfflineWindow: 7200, defaultAnchor: 'slot', historyDays: 90, staleMinutes: 30 };
+    obj.SETTINGS_DEFAULTS = { skipGraceSeconds: 120, defaultOfflinePolicy: 'wait', defaultOfflineWindow: 7200, defaultAnchor: 'slot', historyDays: 90, staleMinutes: 30,
+        queueIntervalSeconds: 60, pageSize: 50, scheduleStepMinutes: 5, indentPs1: '4', indentBat: '4', indentBash: '2' };
+    var SCHEDULE_STEPS = [1, 5, 10, 15, 30, 60], INDENTS = ['2', '4', 'tab'];
     obj.settingsCache = null;
     obj.getSettings = function() {
         if (obj.settingsCache != null) return Promise.resolve(obj.settingsCache);
@@ -763,15 +770,24 @@ module.exports.scripttask = function (parent) {
             defaultOfflineWindow: Math.floor(Number(args.defaultOfflineWindow)),
             defaultAnchor: (args.defaultAnchor == 'actual') ? 'actual' : 'slot',
             historyDays: Math.floor(Number(args.historyDays)),
-            staleMinutes: Math.floor(Number(args.staleMinutes))
+            staleMinutes: Math.floor(Number(args.staleMinutes)),
+            queueIntervalSeconds: Math.floor(Number(args.queueIntervalSeconds)),
+            pageSize: Math.floor(Number(args.pageSize)),
+            scheduleStepMinutes: Number(args.scheduleStepMinutes),
+            indentPs1: String(args.indentPs1), indentBat: String(args.indentBat), indentBash: String(args.indentBash)
         };
         if (!(s.skipGraceSeconds >= 60 && s.skipGraceSeconds <= 3600)) throw new RpcError('The Skip grace period must be between 1 and 60 minutes.');
         if (!(s.historyDays >= 1 && s.historyDays <= 3650)) throw new RpcError('Keep history for between 1 and 3650 days.');
         if (!(s.staleMinutes >= 5 && s.staleMinutes <= 1440)) throw new RpcError('The "No result yet" time must be between 5 minutes and 24 hours.');
+        if (!(s.queueIntervalSeconds >= 15 && s.queueIntervalSeconds <= 600)) throw new RpcError('The queue check interval must be between 15 seconds and 10 minutes.');
+        if (!(s.pageSize >= 10 && s.pageSize <= 200)) throw new RpcError('Rows per page must be between 10 and 200.');
+        if (SCHEDULE_STEPS.indexOf(s.scheduleStepMinutes) < 0) throw new RpcError('Invalid schedule time step.');
+        if ([s.indentPs1, s.indentBat, s.indentBash].some(function(v) { return INDENTS.indexOf(v) < 0; })) throw new RpcError('Invalid indentation.');
         if (!(s.defaultOfflineWindow >= 60 && s.defaultOfflineWindow <= 30 * 86400)) throw new RpcError('The default window must be between 1 minute and 30 days.');
         await obj.db.saveSettings(s);
         obj.settingsCache = null;
         if (s.historyDays < before.historyDays) { obj.lastCleanup = 0; obj.cleanHistory(); }
+        if (s.queueIntervalSeconds != before.queueIntervalSeconds) { await obj.getSettings(); obj.resetQueueTimer(); }
         obj.invalidate({ settings: true });
         return obj.getSettings();
     };

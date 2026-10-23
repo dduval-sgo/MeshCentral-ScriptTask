@@ -15,7 +15,8 @@
     // Format a Date for <input type="datetime-local">
     function localInput(d) { return d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate()) + 'T' + pad(d.getHours()) + ':' + pad(d.getMinutes()); }
     function fromLocalInput(v) { var t = new Date(v).getTime(); return isNaN(t) ? null : Math.floor(t / 1000); }
-    function nextFiveMinutes() { var d = new Date(Date.now() + 60000); d.setSeconds(0, 0); d.setMinutes(Math.ceil(d.getMinutes() / 5) * 5); return d; }
+    // The next whole step (in minutes) at least a minute from now
+    function nextStep(step) { var d = new Date(Date.now() + 60000); d.setSeconds(0, 0); d.setMinutes(Math.ceil(d.getMinutes() / step) * step); return d; }
 
     // ---- Schedule ----
 
@@ -31,16 +32,17 @@
 
     // props: title, subtitle, schedule (when editing), settings (server defaults), onSubmit(schedule) -> Promise (resolve to close), onClose
     ST.dialogs.Schedule = function (props) {
+        var stepMin = (props.settings && props.settings.scheduleStepMinutes) || 5;
         var initial = useMemo(function () {
             var e = props.schedule, d = props.settings || {};
             if (e == null) {
                 var win = splitSpan(d.defaultOfflineWindow || 7200);
-                return { recur: 'once', start: localInput(nextFiveMinutes()), interval: 1, days: [new Date().getDay()], endNever: true, end: '',
+                return { recur: 'once', start: localInput(nextStep(stepMin)), interval: 1, days: [new Date().getDay()], endNever: true, end: '',
                     offline: d.defaultOfflinePolicy || 'wait', windowN: win[0], windowUnit: win[1], anchor: d.defaultAnchor || 'slot' };
             }
             // Editing: keep the schedule's settings. A start time that has passed is shown as its next run.
             var startAt = (e.startAt < ST.now() && e.nextRun != null && e.nextRun > ST.now()) ? e.nextRun : e.startAt;
-            if (startAt < ST.now()) startAt = Math.floor(nextFiveMinutes().getTime() / 1000);
+            if (startAt < ST.now()) startAt = Math.floor(nextStep(stepMin).getTime() / 1000);
             var w = splitSpan(e.offlineWindow || d.defaultOfflineWindow || 7200);
             var days = (e.daysOfWeek && e.daysOfWeek.length) ? e.daysOfWeek.map(Number) : [new Date(startAt * 1000).getDay()]; // Preselected if switched to weekly
             return { recur: e.recur, start: localInput(new Date(startAt * 1000)), interval: e.interval || 1, days: days,
@@ -111,7 +113,7 @@
                 <div class="row g-3 mb-3">
                     <div class="col-sm-7">
                         <label class="form-label" for="st-start">${f.recur == 'once' ? 'Run at' : 'Start'}</label>
-                        <input type="datetime-local" class="form-control" id="st-start" value=${f.start} onInput=${function (e) { set('start', e.target.value); }} required />
+                        <input type="datetime-local" class="form-control" id="st-start" step=${(new Date(f.start).getMinutes() % stepMin == 0) ? stepMin * 60 : 60} value=${f.start} onInput=${function (e) { set('start', e.target.value); }} required />
                     </div>
                     ${f.recur != 'once' ? html`
                     <div class="col-sm-5">
@@ -174,14 +176,16 @@
     ST.SettingsForm = function (props) {
         var st = props.settings;
         var w = splitSpan(st.defaultOfflineWindow);
-        var s = useState({ grace: Math.round(st.skipGraceSeconds / 60), offline: st.defaultOfflinePolicy, windowN: w[0], windowUnit: w[1], anchor: st.defaultAnchor, historyDays: st.historyDays, staleMinutes: st.staleMinutes });
+        var s = useState({ grace: Math.round(st.skipGraceSeconds / 60), offline: st.defaultOfflinePolicy, windowN: w[0], windowUnit: w[1], anchor: st.defaultAnchor, historyDays: st.historyDays, staleMinutes: st.staleMinutes,
+            queueIntervalSeconds: st.queueIntervalSeconds, pageSize: st.pageSize, scheduleStepMinutes: st.scheduleStepMinutes, indentPs1: st.indentPs1, indentBat: st.indentBat, indentBash: st.indentBash });
         var f = s[0], setF = s[1];
         var busy = useState(false), err = useState(null);
         var set = function (k, v) { setF(function (o) { var n = Object.assign({}, o); n[k] = v; return n; }); };
         var submit = function (e) {
             e.preventDefault();
             busy[1](true);
-            ST.rpc('saveSettings', { skipGraceSeconds: Math.round(Number(f.grace) * 60), defaultOfflinePolicy: f.offline, defaultOfflineWindow: Math.round(Number(f.windowN) * f.windowUnit), defaultAnchor: f.anchor, historyDays: Number(f.historyDays), staleMinutes: Number(f.staleMinutes) })
+            ST.rpc('saveSettings', { skipGraceSeconds: Math.round(Number(f.grace) * 60), defaultOfflinePolicy: f.offline, defaultOfflineWindow: Math.round(Number(f.windowN) * f.windowUnit), defaultAnchor: f.anchor, historyDays: Number(f.historyDays), staleMinutes: Number(f.staleMinutes),
+                queueIntervalSeconds: Number(f.queueIntervalSeconds), pageSize: Number(f.pageSize), scheduleStepMinutes: Number(f.scheduleStepMinutes), indentPs1: f.indentPs1, indentBat: f.indentBat, indentBash: f.indentBash })
             .then(function (saved) { busy[1](false); ST.ui.toast('Settings saved.'); props.onSaved(saved); }, function (ex) { busy[1](false); err[1](ex.message); });
         };
         return html`<form id="st-settings" class="st-settings" onSubmit=${submit}>
@@ -192,6 +196,11 @@
                 </div>
                 <div class="st-section-title">Queue and history</div>
                 <div class="mb-3">
+                    <label class="form-label" for="st-interval-check">Check the queue every</label>
+                    <div class="input-group w-auto"><input type="number" min="15" max="600" step="5" class="form-control" id="st-interval-check" value=${f.queueIntervalSeconds} onInput=${function (e) { set('queueIntervalSeconds', e.target.value); }} /><span class="input-group-text">seconds</span></div>
+                    <div class="form-text">How often due runs are sent to online devices and overdue ones are marked Missed. A device that connects gets its due runs straight away regardless.</div>
+                </div>
+                <div class="mb-3">
                     <label class="form-label" for="st-stale">Flag runs with no result after</label>
                     <div class="input-group w-auto"><input type="number" min="5" max="1440" step="1" class="form-control" id="st-stale" value=${f.staleMinutes} onInput=${function (e) { set('staleMinutes', e.target.value); }} /><span class="input-group-text">minutes</span></div>
                     <div class="form-text">Runs sent to a device this long ago without a result show as "No result yet". Raise it if some scripts take longer.</div>
@@ -200,6 +209,11 @@
                     <label class="form-label" for="st-history-days">Keep history for</label>
                     <div class="input-group w-auto"><input type="number" min="1" max="3650" step="1" class="form-control" id="st-history-days" value=${f.historyDays} onInput=${function (e) { set('historyDays', e.target.value); }} /><span class="input-group-text">days</span></div>
                     <div class="form-text">Finished runs older than this are deleted, with their output.</div>
+                </div>
+                <div class="mb-3">
+                    <label class="form-label" for="st-page-size">Rows per page</label>
+                    <div class="input-group w-auto"><input type="number" min="10" max="200" step="10" class="form-control" id="st-page-size" value=${f.pageSize} onInput=${function (e) { set('pageSize', e.target.value); }} /><span class="input-group-text">rows</span></div>
+                    <div class="form-text">For Queue, Schedules, History and Batches on this page.</div>
                 </div>
                 <div class="st-section-title">Defaults for new schedules</div>
                 <div class="row g-3">
@@ -219,7 +233,23 @@
                             <option value="slot">Keep the original schedule</option><option value="actual">Shift to the actual run time</option>
                         </select>
                     </div>
+                    <div class="col-12">
+                        <label class="form-label" for="st-def-step">Start times in steps of</label>
+                        <select id="st-def-step" class="form-select w-auto" value=${f.scheduleStepMinutes} onChange=${function (e) { set('scheduleStepMinutes', Number(e.target.value)); }}>
+                            ${[1, 5, 10, 15, 30, 60].map(function (m) { return html`<option value=${m}>${m == 60 ? '1 hour' : m + (m == 1 ? ' minute' : ' minutes')}</option>`; })}
+                        </select>
+                        <div class="form-text">A new schedule starts at the next step, and its start time moves in these steps.</div>
+                    </div>
                 </div>
+                <div class="st-section-title mt-3">Script editor</div>
+                <div class="mb-1"><span class="form-label">Indentation for scripts that don't have any yet</span></div>
+                <div class="st-indent-grid">
+                    ${[['indentPs1', 'PowerShell'], ['indentBat', 'Batch'], ['indentBash', 'Bash']].map(function (t) { return html`<label key=${t[0]}><span>${t[1]}</span>
+                        <select class="form-select form-select-sm" id=${'st-' + t[0]} value=${f[t[0]]} onChange=${function (e) { set(t[0], e.target.value); }}>
+                            <option value="2">2 spaces</option><option value="4">4 spaces</option><option value="tab">Tabs</option>
+                        </select></label>`; })}
+                </div>
+                <div class="form-text">Scripts that already use indentation keep theirs.</div>
                 ${err[0] ? html`<div class="alert alert-danger py-2 mt-3 mb-0">${err[0]}</div>` : null}
                 <div class="mt-3"><button type="submit" class="btn btn-primary" disabled=${busy[0]}>${busy[0] ? html`<${ST.Spinner} class="me-1" />` : null}Save settings</button></div>
             </form>`;
