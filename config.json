@@ -2,7 +2,7 @@
   "name": "ScriptTask",
   "shortName": "scripttask",
   "version": "0.1.0",
-  "author": "Ryan Blenis",
+  "author": "Desmond Duval (based on ScriptTask by Ryan Blenis)",
   "description": "Script (PowerShell, BAT, Bash) runner for endpoints",
   "hasAdminPanel": true,
   "homepage": "https://github.com/dduval-sgo/MeshCentral-ScriptTask",

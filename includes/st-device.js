@@ -2,6 +2,7 @@
 * @description ScriptTask device tab: run and schedule library scripts on one device, and see its queue and history.
 * ScriptTask managers also get multi-device runs, the variables that apply here, and links to the ScriptTask page.
 * Requires st-core.js, st-dialogs.js, st-editor.js and st-shared.js.
+* @author Desmond Duval
 * @license Apache-2.0
 */
 

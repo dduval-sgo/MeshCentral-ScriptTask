@@ -1,6 +1,8 @@
 /*
  * ScriptTask plugin styles. Colours come only from Bootstrap's CSS variables, so every MeshCentral
  * theme (default or Bootswatch) and light/dark mode applies without changes here.
+ * @author Desmond Duval
+ * @license Apache-2.0
  */
 
 :root {

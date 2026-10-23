@@ -1,6 +1,7 @@
 /**
 * @description ScriptTask theme sync: use the MeshCentral Modern UI's Bootstrap theme and light/dark mode in plugin pages.
 * Load this first, synchronously, in <head> so the page never paints with the wrong theme.
+* @author Desmond Duval
 * @license Apache-2.0
 */
 

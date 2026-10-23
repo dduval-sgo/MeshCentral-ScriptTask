@@ -1,6 +1,7 @@
 /**
 * @description Tests for schedule.js: run times in the schedule's own time zone, across daylight-saving changes.
 * Run with: node --test test/*.test.js
+* @author Desmond Duval
 * @license Apache-2.0
 */
 

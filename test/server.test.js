@@ -2,6 +2,10 @@
 * @description Server-side tests for the ScriptTask plugin, run against a stubbed MeshCentral and an in-memory NeDB.
 * Run with: MESHCENTRAL_PARENT=/path/containing/node_modules node --test test/*.test.js
 * MESHCENTRAL_PARENT is the folder whose node_modules holds MeshCentral's NeDB (where MeshCentral is installed).
+* To test against MongoDB instead, also set MONGODB_URL (e.g. mongodb://localhost:27017) and make the mongodb
+* driver loadable (e.g. NODE_PATH=/path/to/node_modules); each test uses its own database, and
+* --test-force-exit is needed as the driver keeps its connection open.
+* @author Desmond Duval
 * @license Apache-2.0
 */
 
@@ -46,7 +50,8 @@ function createPlugin() {
     const events = [];
     const meshServer = {
         debug: function () { },
-        args: {},
+        // Each test gets its own MongoDB database when MONGODB_URL is set
+        args: process.env.MONGODB_URL ? { mongodb: process.env.MONGODB_URL, mongodbname: 'scripttask_test_' + path.basename(dataDir).replace(/\W/g, '') } : {},
         parentpath: process.env.MESHCENTRAL_PARENT || path.join(__dirname, '..'),
         getConfigFilePath: function (f) { return path.join(dataDir, f); },
         webserver: {
@@ -86,12 +91,13 @@ function createPlugin() {
 // Call an RPC method as a user; resolves the reply ({ ok, data } or { ok:false, error })
 function rpc(plugin, user, method, args) {
     return new Promise(function (resolve) {
-        const session = { user: USERS[user], domain: { id: '' }, send: function (m) { resolve(m); } };
-        plugin.serveraction({ action: 'plugin', plugin: 'scripttask', pluginaction: 'rpc', method: method, args: args || {}, reqId: 'r1' }, session);
+        // Messages go through JSON both ways, as on the real connection (MongoDB ids become strings)
+        const session = { user: USERS[user], domain: { id: '' }, send: function (m) { resolve(JSON.parse(JSON.stringify(m))); } };
+        plugin.serveraction({ action: 'plugin', plugin: 'scripttask', pluginaction: 'rpc', method: method, args: JSON.parse(JSON.stringify(args || {})), reqId: 'r1' }, session);
     });
 }
 function agentSends(plugin, nodeId, command) {
-    plugin.serveraction(Object.assign({ action: 'plugin', plugin: 'scripttask' }, command), { dbNodeKey: nodeId, send: function () { } });
+    plugin.serveraction(JSON.parse(JSON.stringify(Object.assign({ action: 'plugin', plugin: 'scripttask' }, command))), { dbNodeKey: nodeId, send: function () { } });
 }
 const wait = function (ms) { return new Promise(function (r) { setTimeout(r, ms || 50); }); };
 // The DB layer finishes connecting asynchronously
@@ -355,6 +361,11 @@ test('schedules from before this version keep working without migration', async 
     jobs = await jobsFor(ctx, sid);
     const next = jobs.find(j => j.completeTime == null);
     assert.strictEqual(next.slot, start + 86400 * 21, 'next run is tomorrow on the original grid, with no catch-up');
+    // Deleting a legacy schedule removes its pending run (on MongoDB its job holds the schedule's id as an ObjectId)
+    const old = await ctx.plugin.db.addJobSchedule({ scriptId: sid, node: WIN, scheduledBy: 'admin', recur: 'daily', interval: 1, daysOfWeek: [], startAt: start, endAt: null, lastRun: null, nextRun: nowS() + 3600, type: 'jobSchedule' });
+    await ctx.plugin.db.addJob({ scriptId: sid, scriptName: 'Legacy', node: WIN, runBy: 'admin', dontQueueUntil: nowS() + 3600, jobSchedule: old.insertedId });
+    assert.ok((await rpc(ctx.plugin, 'admin', 'deleteSchedule', { scheduleId: old.insertedId })).ok);
+    assert.strictEqual((await jobsFor(ctx, sid)).filter(j => j.node == WIN && j.completeTime == null).length, 0);
 });
 
 test('the ScriptTask page is for managers; the device tab is for everyone', async function () {

@@ -2,6 +2,7 @@
 * @description ScriptTask code editor for plugin pages: loads the CodeMirror bundle on first use and wraps it as a
 * Preact component, with a per-user code theme that is independent of the MeshCentral theme.
 * Requires st-core.js.
+* @author Desmond Duval
 * @license Apache-2.0
 */
 

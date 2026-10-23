@@ -1,5 +1,7 @@
 /**
 * @description ScriptTask icon set: inline SVG bodies from Bootstrap Icons 1.13.2 (MIT, see vendor/LICENSE-bootstrap-icons)
+* @author Desmond Duval
+* @license Apache-2.0 (this file's code; the icon artwork is MIT)
 */
 
 "use strict";

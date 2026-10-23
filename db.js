@@ -1,6 +1,8 @@
 /** 
 * @description MeshCentral-ScriptTask database module
 * @author Ryan Blenis
+* @author Desmond Duval (modifications)
+* Modified by Desmond Duval, 2026: redesigned interface, scheduling engine, batches, permissions and settings. See changelog.md.
 * @copyright Ryan Blenis 2019
 * @license Apache-2.0
 */
@@ -8,6 +10,12 @@
 "use strict";
 var Datastore = null;
 var formatId = null;
+// References to other documents are stored as strings. Jobs made by older versions on MongoDB hold their
+// schedule's id as an ObjectId, so schedule lookups match either form.
+function idForms(id) {
+    var s = String(id);
+    try { var o = formatId(s); return (o === s) ? [s] : [s, o]; } catch (e) { return [s]; }
+}
 
 module.exports.CreateDB = function(meshserver) {
     var obj = {};
@@ -83,7 +91,7 @@ module.exports.CreateDB = function(meshserver) {
         };
         obj.deleteSchedulesForScript = function(id) {
             id = formatId(id);
-            return obj.scriptFile.deleteMany( { type: 'jobSchedule', scriptId: id } );
+            return obj.scriptFile.deleteMany( { type: 'jobSchedule', scriptId: String(id) } );
         };
         obj.getByPath = function(path) {
           return obj.scriptFile.find( { type: { $in: [ 'script', 'folder' ] }, path: path }).toArray();
@@ -239,26 +247,26 @@ module.exports.CreateDB = function(meshserver) {
         obj.getJobScriptHistory = function(scriptId) {
             return obj.scriptFile.find( { 
                 type: 'job', 
-                scriptId: scriptId,
+                scriptId: String(scriptId),
             }).sort({ completeTime: -1, queueTime: -1 }).limit(200).toArray();
         };
         obj.updateScriptJobName = function(scriptId, scriptName) {
-            return obj.scriptFile.updateMany({ type: 'job', scriptId: scriptId }, { $set: { scriptName: scriptName } });    
+            return obj.scriptFile.updateMany({ type: 'job', scriptId: String(scriptId) }, { $set: { scriptName: scriptName } });    
         };
         obj.getJobSchedulesForScript = function(scriptId) {
-            return obj.scriptFile.find( { type: 'jobSchedule', scriptId: scriptId } ).toArray();
+            return obj.scriptFile.find( { type: 'jobSchedule', scriptId: String(scriptId) } ).toArray();
         };
         obj.getJobSchedulesForNode = function (nodeId) {
             return obj.scriptFile.find( { type: 'jobSchedule', node: nodeId } ).toArray();
         };
         obj.getIncompleteJobsForSchedule = function (schedId) {
-            return obj.scriptFile.find( { type: 'job', jobSchedule: schedId, completeTime: null } ).toArray();
+            return obj.scriptFile.find( { type: 'job', jobSchedule: { $in: idForms(schedId) }, completeTime: null } ).toArray();
         };
         obj.deleteUndispatchedJobsForSchedule = function (schedId) {
-            return obj.scriptFile.deleteMany( { type: 'job', jobSchedule: schedId, completeTime: null, dispatchTime: null } );
+            return obj.scriptFile.deleteMany( { type: 'job', jobSchedule: { $in: idForms(schedId) }, completeTime: null, dispatchTime: null } );
         };
         obj.deletePendingJobsForSchedule = function (schedId) {
-            return obj.scriptFile.deleteMany( { type: 'job', jobSchedule: schedId, completeTime: null } );
+            return obj.scriptFile.deleteMany( { type: 'job', jobSchedule: { $in: idForms(schedId) }, completeTime: null } );
         };
         obj.deleteOldHistory = function(days) {
             var oldTime = Math.floor(new Date() / 1000) - (86400 * (days || 90));
@@ -273,7 +281,7 @@ module.exports.CreateDB = function(meshserver) {
             });
         };
         obj.deleteVariablesForScript = function(scriptId) {
-            return obj.scriptFile.deleteMany( { type: 'variable', scope: 'script', scopeTarget: scriptId } );
+            return obj.scriptFile.deleteMany( { type: 'variable', scope: 'script', scopeTarget: String(scriptId) } );
         };
         obj.getScriptContents = function() {
             return obj.scriptFile.find( { type: 'script' } ).project( { name: 1, content: 1 } ).toArray();

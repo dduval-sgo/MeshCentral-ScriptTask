@@ -1,0 +1,15 @@
+MeshCentral-ScriptTask
+Copyright Ryan Blenis (original ScriptTask plugin, https://github.com/ryanblenis/MeshCentral-ScriptTask)
+Modifications copyright 2026 Desmond Duval
+
+Licensed under the Apache License, Version 2.0 (see LICENSE).
+
+This is a modified version of the original ScriptTask plugin. The changes include
+a redesigned interface for MeshCentral's Modern UI, the ScriptTask management page,
+a new scheduling engine, batches, plugin permissions, secret variables and new
+settings. Files changed from the original carry a "Modified by" notice in their
+header; changelog.md lists the changes in detail.
+
+Bundled third-party software keeps its own licence, listed in includes/vendor/LICENSE-*:
+Preact and htm (MIT), CodeMirror 6 and its language and theme packages (MIT),
+and Bootstrap Icons (MIT).

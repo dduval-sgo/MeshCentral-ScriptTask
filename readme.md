@@ -2,7 +2,7 @@
 
 A script runner plugin for [MeshCentral](https://github.com/Ylianst/MeshCentral). Keep PowerShell, Batch and Bash scripts in a central library, run them on one device or many, schedule them, and review their output.
 
-This is a fork of [ryanblenis/MeshCentral-ScriptTask](https://github.com/ryanblenis/MeshCentral-ScriptTask) with a redesigned interface that fits MeshCentral's Modern UI, a server-wide management page, batches, and a new scheduling engine. See the [changelog](changelog.md) for everything that changed.
+Maintained by Desmond Duval. This is a fork of [ryanblenis/MeshCentral-ScriptTask](https://github.com/ryanblenis/MeshCentral-ScriptTask), the original plugin by Ryan Blenis, with a redesigned interface that fits MeshCentral's Modern UI, a server-wide management page, batches, and a new scheduling engine. See the [changelog](changelog.md) for everything that changed.
 
 ![Overview](docs/screenshots/overview.png)
 
@@ -135,8 +135,17 @@ Server tests run against a stubbed MeshCentral and need the folder whose `node_m
 MESHCENTRAL_PARENT=/path/to/meshcentral/install node --test test/*.test.js
 ```
 
+To run them against MongoDB instead, point `MONGODB_URL` at a server (each test uses its own database) and make the `mongodb` driver loadable:
+
+```sh
+MONGODB_URL=mongodb://localhost:27017 NODE_PATH=/path/to/node_modules MESHCENTRAL_PARENT=/path/to/meshcentral/install \
+  node --test --test-force-exit test/server.test.js
+```
+
+Things that need real agents are in the [manual test checklist](docs/testing-checklist.md).
+
 The design notes and plans for the redesign are in [docs/ui-redesign-plan.md](docs/ui-redesign-plan.md).
 
 ## License
 
-Apache 2.0. Bundled libraries keep their own licences, listed in `includes/vendor/LICENSE-*`.
+Apache 2.0. Original plugin by Ryan Blenis; modifications by Desmond Duval (see [NOTICE](NOTICE)). Bundled libraries keep their own licences, listed in `includes/vendor/LICENSE-*`.

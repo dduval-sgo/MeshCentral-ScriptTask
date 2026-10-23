@@ -1,6 +1,7 @@
 /**
 * @description ScriptTask dialogs shared by plugin pages: schedule, output viewer, variable, device picker, and the settings form.
 * Requires st-core.js and st-editor.js.
+* @author Desmond Duval
 * @license Apache-2.0
 */
 

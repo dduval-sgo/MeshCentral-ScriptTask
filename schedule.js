@@ -1,6 +1,7 @@
 /**
 * @description ScriptTask schedule maths: when a schedule's runs fall, in the schedule's own time zone.
 * Pure functions (no database or MeshCentral access) so they can be tested on their own.
+* @author Desmond Duval
 * @license Apache-2.0
 */
 

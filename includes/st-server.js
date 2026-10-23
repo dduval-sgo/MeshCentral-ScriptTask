@@ -2,6 +2,7 @@
 * @description ScriptTask page (My Server > Plugins > ScriptTask): the script library with a code editor, each script's
 * schedules, history and variables across devices, and plugin settings. For ScriptTask managers.
 * Requires st-core.js, st-dialogs.js, st-editor.js and st-shared.js.
+* @author Desmond Duval
 * @license Apache-2.0
 */
 

@@ -1,6 +1,7 @@
 /**
 * @description ScriptTask client core: server requests, change notices, formatting and shared UI components.
 * Requires vendor/preact, vendor/preact-hooks, vendor/htm and st-icons.js to be loaded first.
+* @author Desmond Duval
 * @license Apache-2.0
 */
 

@@ -1,6 +1,7 @@
 /**
 * @description ScriptTask pieces shared by the device tab and the server page: helpers, the library tree,
 * and the schedule and history tables. Requires st-core.js and st-dialogs.js.
+* @author Desmond Duval
 * @license Apache-2.0
 */
 

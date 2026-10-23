@@ -1,6 +1,8 @@
 /**
 * @description MeshCentral ScriptTask
 * @author Ryan Blenis
+* @author Desmond Duval (modifications)
+* Modified by Desmond Duval, 2026: redesigned interface, scheduling engine, batches, permissions and settings. See changelog.md.
 * @copyright
 * @license Apache-2.0
 */
@@ -276,7 +278,7 @@ module.exports.scripttask = function (parent) {
                 }
                 var scripts = await obj.db.get(s.scriptId);
                 if (scripts.length == 0) continue;
-                await obj.db.addJob({ scriptId: s.scriptId, scriptName: scripts[0].name, node: s.node, runBy: s.scheduledBy, runById: s.scheduledById || null, dontQueueUntil: slot, slot: slot, expiresAt: obj.Schedule.expiresAt(s, slot, settings.skipGraceSeconds), jobSchedule: s._id, batchId: s.batchId || null });
+                await obj.db.addJob({ scriptId: String(s.scriptId), scriptName: scripts[0].name, node: s.node, runBy: s.scheduledBy, runById: s.scheduledById || null, dontQueueUntil: slot, slot: slot, expiresAt: obj.Schedule.expiresAt(s, slot, settings.skipGraceSeconds), jobSchedule: String(s._id), batchId: s.batchId || null });
                 await obj.db.update(s._id, { nextRun: slot });
                 obj.invalidate({ nodeIds: [s.node], scriptIds: [s.scriptId] });
             }
@@ -311,7 +313,7 @@ module.exports.scripttask = function (parent) {
             obj.meshServer.DispatchEvent(targets, obj, Object.assign({ nolog: true, action: 'plugin', plugin: 'scripttask', pluginaction: 'onInvalidate' }, payload));
         };
         if (scopes.library || scopes.variables || scopes.settings || (scopes.scriptIds && scopes.scriptIds.length)) {
-            send(['server-allusers'], { library: scopes.library === true, variables: scopes.variables === true, settings: scopes.settings === true, scriptIds: scopes.scriptIds || [] });
+            send(['server-allusers'], { library: scopes.library === true, variables: scopes.variables === true, settings: scopes.settings === true, scriptIds: (scopes.scriptIds || []).map(String) });
         }
         (scopes.nodeIds || []).forEach(function(nodeId) {
             obj.meshServer.db.Get(nodeId, function(err, nodes) {
@@ -459,7 +461,7 @@ module.exports.scripttask = function (parent) {
             // Running again on some of a batch's devices: the new runs join that batch, replacing those devices' results
             obj.requireManage(session);
             var batch = await obj.db.getBatch(String(args.batchId));
-            if (batch == null || batch.recurring || batch.scriptId != script._id) throw new RpcError('That batch can\'t be run again.');
+            if (batch == null || batch.recurring || String(batch.scriptId) != String(script._id)) throw new RpcError('That batch can\'t be run again.');
             batchId = batch.batchId;
             var added = allowed.accepted.filter(function(n) { return batch.nodeIds.indexOf(n) < 0; });
             if (added.length) await obj.db.update(batch._id, { nodeIds: batch.nodeIds.concat(added) });
@@ -467,12 +469,12 @@ module.exports.scripttask = function (parent) {
             batchId = await obj.startBatch(session, script, allowed.accepted, args.name, false);
         }
         for (var nodeId of allowed.accepted) {
-            await obj.db.addJob({ scriptId: script._id, scriptName: script.name, node: nodeId, runBy: session.user.name, runById: session.user._id, batchId: batchId });
+            await obj.db.addJob({ scriptId: String(script._id), scriptName: script.name, node: nodeId, runBy: session.user.name, runById: session.user._id, batchId: batchId });
         }
         if (allowed.accepted.length) {
             obj.resetQueueTimer();
             obj.queueRun();
-            obj.invalidate({ nodeIds: allowed.accepted, scriptIds: [script._id] });
+            obj.invalidate({ nodeIds: allowed.accepted, scriptIds: [String(script._id)] });
         }
         return { accepted: allowed.accepted.length, refused: allowed.refused, batchId: batchId };
     };
@@ -486,10 +488,10 @@ module.exports.scripttask = function (parent) {
         var allowed = await obj.allowedTargets(session, nodeIds);
         var batchId = (allowed.accepted.length > 1) ? await obj.startBatch(session, script, allowed.accepted, args.name, true, sched) : null;
         for (var nodeId of allowed.accepted) {
-            var r = await obj.db.addJobSchedule(Object.assign({ scriptId: script._id, node: nodeId, scheduledBy: session.user.name, scheduledById: session.user._id, lastRun: null, nextRun: null, lastSlot: null, anchorAt: null, paused: false, batchId: batchId }, sched));
+            var r = await obj.db.addJobSchedule(Object.assign({ scriptId: String(script._id), node: nodeId, scheduledBy: session.user.name, scheduledById: session.user._id, lastRun: null, nextRun: null, lastSlot: null, anchorAt: null, paused: false, batchId: batchId }, sched));
             await obj.ensureScheduleJobs(r.insertedId);
         }
-        if (allowed.accepted.length) obj.invalidate({ nodeIds: allowed.accepted, scriptIds: [script._id] });
+        if (allowed.accepted.length) obj.invalidate({ nodeIds: allowed.accepted, scriptIds: [String(script._id)] });
         return { accepted: allowed.accepted.length, refused: allowed.refused, batchId: batchId };
     };
 
@@ -805,7 +807,7 @@ module.exports.scripttask = function (parent) {
     };
     obj.startBatch = async function(session, script, nodeIds, name, recurring, sched) {
         var batchId = require('crypto').randomBytes(9).toString('hex');
-        await obj.db.addBatch({ batchId: batchId, name: (typeof name == 'string' && name.trim()) ? name.trim().substring(0, 120) : null, scriptId: script._id, scriptName: script.name,
+        await obj.db.addBatch({ batchId: batchId, name: (typeof name == 'string' && name.trim()) ? name.trim().substring(0, 120) : null, scriptId: String(script._id), scriptName: script.name,
             createdBy: session.user.name, createdById: session.user._id, createdAt: Math.floor(Date.now() / 1000), createdMs: Date.now(), nodeIds: nodeIds, recurring: recurring === true, schedule: sched || null });
         return batchId;
     };

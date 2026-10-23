@@ -1,6 +1,8 @@
 /** 
 * @description MeshCentral database abstraction layer for NeDB to be more Mongo-like
 * @author Ryan Blenis
+* @author Desmond Duval (modifications)
+* Modified by Desmond Duval, 2026: redesigned interface, scheduling engine, batches, permissions and settings. See changelog.md.
 * @copyright Ryan Blenis 2019
 * @license Apache-2.0
 * This is by no means feature complete, just a simple abstraction layer for many commonly used DB calls.

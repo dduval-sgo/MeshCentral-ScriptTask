@@ -45,6 +45,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - Server tests (`node --test test/*.test.js`).
 
 ### Fixed
+- On MongoDB, runs and schedules now store their script and schedule as text ids, so filtering by script and looking up a schedule's runs work. Runs made by older versions are still found.
 - A new schedule's default start time could be only seconds away, and already past when saved. It is now always at least a minute ahead.
 - Schedules are calculated in the time zone they were created in, so "daily at 09:00" stays at 09:00 across daylight-saving changes.
 - A device that was offline no longer gets a burst of catch-up runs for a weekly schedule, and a schedule's end time is honoured.

@@ -1,6 +1,7 @@
 /**
 * @description ScriptTask script editor: CodeMirror 6 with PowerShell, Bash and Batch highlighting, ScriptTask
 * #variable# awareness and standard code themes. Built into includes/vendor/st-codemirror.min.js as window.STEditor.
+* @author Desmond Duval
 * @license Apache-2.0
 */
 

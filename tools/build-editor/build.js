@@ -1,6 +1,7 @@
 /**
 * @description Builds the ScriptTask editor bundle and the licence file for the code it includes.
 * Usage: npm install && npm run build   (run in tools/build-editor)
+* @author Desmond Duval
 * @license Apache-2.0
 */
 
