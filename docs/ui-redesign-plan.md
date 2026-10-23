@@ -382,8 +382,13 @@ Each step can ship on its own and keeps the plugin working.
    - Managers only see and change group and device variables for groups and devices they can see in MeshCentral (`IsMeshViewable`, `GetNodeWithRights`). Before, `variables` returned everything.
    - Deleting a script deletes its script variables.
    - Settings: history retention (days, default 90) and the "No result yet" time (default 30 minutes). Cleanup runs at most every 6 hours (before: a 1-in-100 chance each minute), straight away when retention is shortened, and also removes old batches with nothing left. Saving settings with fields left out keeps their current values.
-   - Not done from the original Settings list: history page size, queue tick interval, default schedule time step and default indent per script type. The queue already starts due runs when a device connects, and the editor detects indentation, so these weren't worth the extra settings.
-8. **Polish.** Keyboard shortcuts, empty states, readme and screenshots, version bump.
+   - History page size, queue check interval, schedule start-time step and default indentation per script type were added afterwards, before step 8.
+8. ✅ **Polish** (done). Version 0.1.0.
+   Notes from building it:
+   - Keyboard shortcuts on the ScriptTask page (`g` + letter to change section, `/` search, `n` new, `?` help), off while typing or while a dialog is open. On the device tab, `/` focuses the script picker.
+   - Empty states: an empty library no longer shows a spinner forever on the ScriptTask page, and offers New script and Upload. The device tab says who can add scripts when the library is empty.
+   - Readme rewritten for this fork, with screenshots in `docs/screenshots`.
+   - Not done: a release tag. MeshCentral's update check reads `versionHistoryUrl` (this fork's tags), so tagging `v0.1.0` once merged lets installs see the update.
 
 ## Open questions
 

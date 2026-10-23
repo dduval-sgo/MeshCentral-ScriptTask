@@ -186,12 +186,14 @@
         </li>`;
     }
 
+    // props.items is null while loading
     function Library(props) {
+        var items = props.items || [];
         var q = useState('');
         var dropping = useState(false);
         var fileInput = useRef(null);
-        var tree = useMemo(function () { return buildTree(props.items); }, [props.items]);
-        var matches = q[0] ? props.items.filter(function (i) { return i.type == 'script' && i.name.toLowerCase().indexOf(q[0].toLowerCase()) >= 0; }) : null;
+        var tree = useMemo(function () { return buildTree(items); }, [props.items]);
+        var matches = q[0] ? items.filter(function (i) { return i.type == 'script' && i.name.toLowerCase().indexOf(q[0].toLowerCase()) >= 0; }) : null;
 
         var onDrop = function (e, folder) {
             dropping[1](false);
@@ -218,14 +220,14 @@
             <div class="card-body">
                 ${dropping[0] ? html`<div class="st-drop-hint"><${ST.Icon} name="upload" class="me-1" />Drop scripts to add them to the library</div>` : null}
                 <input type="search" class="form-control form-control-sm mb-2" placeholder="Search scripts" aria-label="Search scripts" value=${q[0]} onInput=${function (e) { q[1](e.target.value); }} />
-                ${props.items.length == 0 ? html`<${ST.Spinner} />` : matches ? (
+                ${props.items == null ? html`<${ST.Spinner} />` : items.length == 0 ? html`<${ST.Empty} icon="folder2-open">The library is empty.</${ST.Empty}>` : matches ? (
                     matches.length == 0 ? html`<${ST.Empty}>No scripts match.</${ST.Empty}>` :
                     html`<ul class="st-tree">${matches.map(function (s) { return html`<${TreeScript} key=${s._id} script=${s} selId=${props.selId} onSelect=${props.onSelect} showPath=${true} compat=${props.compat} />`; })}</ul>`
                 ) : html`<ul class="st-tree">
                     ${tree.roots.map(function (f) { return html`<${TreeFolder} key=${f.item._id} folder=${f} selId=${props.selId} onSelect=${props.onSelect} collapsed=${props.collapsed} onToggle=${props.onToggle} manage=${props.manage} onDrop=${onDrop} compat=${props.compat} />`; })}
                     ${tree.orphans.map(function (s) { return html`<${TreeScript} key=${s._id} script=${s} selId=${props.selId} onSelect=${props.onSelect} manage=${props.manage} compat=${props.compat} />`; })}
                 </ul>`}
-                ${props.manage && props.items.length <= 1 ? html`<div class="form-text mt-2">Drop .ps1, .bat or .sh files here to add them.</div>` : null}
+                ${props.manage && props.items != null && items.length <= 1 ? html`<div class="form-text mt-2">Drop .ps1, .bat or .sh files here to add them.</div>` : null}
                 ${props.footer ? html`<hr class="my-2" />${props.footer}` : null}
             </div>
         </div>`;

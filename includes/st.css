@@ -195,9 +195,11 @@ body.st-page-server { padding: 0; overflow: hidden; background: var(--bs-body-bg
 .st-row-blocked .st-combo-reason { margin-left: 1.05rem; }
 .st-run-bar { position: sticky; bottom: 0; z-index: 5; box-shadow: 0 -.25rem .75rem rgba(0, 0, 0, .08); }
 .st-run-bar .card-body { display: flex; align-items: center; gap: .5rem; flex-wrap: wrap; padding: .6rem .75rem; }
-.st-run-summary { display: flex; align-items: baseline; gap: .25rem .6rem; flex-wrap: wrap; margin-right: auto; }
+.st-run-summary { display: flex; align-items: baseline; gap: .25rem .6rem; flex-wrap: wrap; flex: 1 1 16rem; min-width: 0; }
+.st-run-submit { display: flex; align-items: center; gap: .5rem; margin-left: auto; flex-wrap: wrap; justify-content: flex-end; }
+.st-run-submit .btn { white-space: nowrap; }
 .st-run-summary > div { flex-basis: 100%; }
-.st-run-name { width: 14rem; }
+.st-run-name { width: 14rem; max-width: 100%; }
 
 /* Batches */
 .st-statebar { display: flex; flex-direction: column; gap: .3rem; min-width: 10rem; }
@@ -248,3 +250,8 @@ body.st-page-server { padding: 0; overflow: hidden; background: var(--bs-body-bg
 .st-settings .input-group.w-auto { display: inline-flex; flex-wrap: nowrap; }
 .st-settings .input-group.w-auto .form-control { width: 7rem; flex: none; }
 .st-settings .input-group.w-auto + .form-text { display: block; }
+
+/* Keyboard shortcuts */
+.st-shortcuts kbd { font-size: .75rem; }
+.st-shortcuts-link { font-size: .75rem; text-decoration: none; }
+.st-shortcuts-link kbd { font-size: .65rem; padding: .05rem .3rem; }

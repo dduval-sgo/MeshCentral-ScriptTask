@@ -654,9 +654,11 @@
                         ${skipped ? html`<div class="text-warning-emphasis small"><${ST.Icon} name="exclamation-triangle-fill" class="me-1" />${plural(skipped, 'device')} can't run ${ST.fmt.filetype(item.filetype)} scripts and will be skipped.</div>` : null}
                         ${offline ? html`<div class="text-body-secondary small"><${ST.Icon} name="wifi-off" class="me-1" />${plural(offline, 'device')} offline: runs wait until they connect.</div>` : null}
                     </div>
+                    <div class="st-run-submit">
                     <input class="form-control form-control-sm st-run-name" placeholder="Batch name (optional)" aria-label="Batch name" maxlength="120" value=${batchName[0]} onInput=${function (e) { batchName[1](e.target.value); }} />
                     <button class="btn st-btn-quiet" disabled=${item == null || targets.length == 0} onClick=${schedule}><${ST.Icon} name="calendar-plus" class="me-1" />Schedule…</button>
                     <button class="btn btn-primary" disabled=${item == null || targets.length == 0} onClick=${runNow}><${ST.Icon} name="play-fill" class="me-1" />Run now${targets.length > 1 ? ' on ' + targets.length : ''}</button>
+                    </div>
                 </div>
             </div>
         </div>`;
@@ -898,7 +900,7 @@
             </div>
             <div class="card"><div class="card-body p-0">
                 ${props.vars == null ? html`<div class="text-center py-5"><${ST.Spinner} /></div>`
-                : shown.length == 0 ? html`<${ST.Empty} icon="braces">${vars.length ? 'No variables match.' : 'No variables yet.'}</${ST.Empty}>`
+                : shown.length == 0 ? html`<${ST.Empty} icon="braces">${vars.length ? 'No variables match.' : 'No variables yet. Scripts can use values that differ per device, group or script as #name#.'}</${ST.Empty}>`
                 : html`<div class="table-responsive"><table class="table table-sm table-hover st-table mb-0">
                     <thead><tr><th>Name</th><th>Applies to</th><th>Value</th><th>Used in</th><th class="st-col-actions"><span class="visually-hidden">Actions</span></th></tr></thead>
                     <tbody>${shown.map(function (v) {
@@ -979,7 +981,7 @@
                 </div>
                 <div class="card">
                     <div class="card-header"><${ST.Icon} name="clock" class="me-1" />Up next</div>
-                    ${d.upNext.length == 0 ? html`<${ST.Empty} icon="clock">Nothing scheduled.</${ST.Empty}>` : html`
+                    ${d.upNext.length == 0 ? html`<${ST.Empty} icon="clock">Nothing scheduled. Schedule a script from <a href="#/run">Run</a> or a script's page in the Library.</${ST.Empty}>` : html`
                     <ul class="list-group list-group-flush st-upnext">
                         ${d.upNext.map(function (j) { return html`<li key=${j._id} class="list-group-item">
                             <span class="st-upnext-time" title=${ST.fmt.time(j.dontQueueUntil)}>${j.dontQueueUntil <= ST.now() ? 'Due ' : ''}<${ST.Time} t=${j.dontQueueUntil} /></span>
@@ -1002,6 +1004,53 @@
                 <div class="card-footer small"><a href="#/batches">All batches</a></div>`}
             </div>
         </div>`;
+    }
+
+    // ---- Keyboard shortcuts ----
+
+    var GO_KEYS = { o: 'overview', l: 'library', r: 'run', b: 'batches', q: 'queue', s: 'schedules', h: 'history', v: 'variables', ',': 'settings' };
+    var SHORTCUTS = [
+        ['g then o, l, r, b, q, s, h, v', 'Go to Overview, Library, Run, Batches, Queue, Schedules, History or Variables'],
+        ['g then ,', 'Go to Settings'],
+        ['/', 'Search on this page'],
+        ['n', 'New script (Library), new variable (Variables), or new run'],
+        ['Ctrl+S', 'Save the script in the editor'],
+        ['Esc', 'Close a dialog'],
+        ['?', 'Show these shortcuts']
+    ];
+    function ShortcutsDialog(props) {
+        return html`<${ST.Modal} title="Keyboard shortcuts" onClose=${props.onClose}>
+            <table class="table table-sm st-table st-shortcuts mb-0"><tbody>
+                ${SHORTCUTS.map(function (s) { return html`<tr><td class="text-nowrap">${s[0].split(' ').map(function (k) { return k == 'then' || k == 'or' ? html` <span class="text-body-secondary">${k}</span> ` : html`<kbd>${k.replace(/,$/, '')}</kbd>${k.endsWith(',') ? ', ' : ''}`; })}</td><td>${s[1]}</td></tr>`; })}
+            </tbody></table>
+        </${ST.Modal}>`;
+    }
+    // Single-key shortcuts, ignored while typing or while a dialog is open
+    function useShortcuts(handlers) {
+        var ref = useRef(handlers);
+        ref.current = handlers;
+        useEffect(function () {
+            var pendingG = 0;
+            var onKey = function (e) {
+                if (e.ctrlKey || e.metaKey || e.altKey || e.defaultPrevented) return;
+                var t = e.target;
+                if (t && t.closest && t.closest('input, textarea, select, [contenteditable="true"], .cm-editor')) return;
+                if (document.querySelector('.st-modal-layer')) return;
+                var h = ref.current;
+                if (pendingG && Date.now() - pendingG < 1500 && GO_KEYS[e.key]) { e.preventDefault(); pendingG = 0; h.go(GO_KEYS[e.key]); return; }
+                pendingG = 0;
+                if (e.key == 'g') { pendingG = Date.now(); return; }
+                if (e.key == '/') {
+                    var input = document.querySelector('.st-main input[type="search"], .st-main input[role="combobox"]');
+                    if (input) { e.preventDefault(); input.focus(); if (input.select) input.select(); }
+                    return;
+                }
+                if (e.key == 'n') { e.preventDefault(); h.create(); return; }
+                if (e.key == '?') { e.preventDefault(); h.help(); }
+            };
+            document.addEventListener('keydown', onKey);
+            return function () { document.removeEventListener('keydown', onKey); };
+        }, []);
     }
 
     // ---- App ----
@@ -1133,6 +1182,17 @@
                 .then(function (ok) { if (ok) ST.ui.attempt(ST.rpc('deleteVar', { id: v._id }), 'Variable deleted.'); });
             }
         };
+        useShortcuts({
+            go: function (section) { go({ section: section }); },
+            create: function () {
+                var sec = route[0].section;
+                if (sec == 'library') actions.newScript();
+                else if (sec == 'variables') actions.editAnyVar(null);
+                else if (sec == 'run') { var i = document.querySelector('.st-main input[role="combobox"]'); if (i) i.focus(); }
+                else go({ section: 'run' });
+            },
+            help: function () { setDialog(html`<${ShortcutsDialog} onClose=${close} />`); }
+        });
         var scheduleActions = S.scheduleActions({ setDialog: setDialog, close: close, settings: function () { return state.init.settings; }, deviceName: function (s) { return nodeName(s.node); }, scriptName: scriptName });
 
         if (document.documentElement.getAttribute('data-st-classic') == '1') {
@@ -1154,18 +1214,20 @@
                     ${nav.map(function (n) { return html`<li class="nav-item"><a href=${'#/' + n[0]} class=${'nav-link' + (navSection == n[0] ? ' active' : '')} aria-current=${navSection == n[0] ? 'page' : null}
                         onClick=${function (e) { e.preventDefault(); go({ section: n[0], id: null }); }}><${ST.Icon} name=${n[2]} class="me-2" />${n[1]}</a></li>`; })}
                 </ul>
-                <div class="st-sidenav-foot">Version ${state.init.version}</div>
+                <div class="st-sidenav-foot">Version ${state.init.version}
+                    <button type="button" class="btn btn-link btn-sm p-0 d-block st-shortcuts-link" onClick=${function () { setDialog(html`<${ShortcutsDialog} onClose=${close} />`); }}>Keyboard shortcuts <kbd>?</kbd></button></div>
             </nav>
             <main class="st-main">
                 ${section == 'library' ? html`<div class="st-library">
                     <div class="st-lib-tree">
-                        <${S.Library} items=${items} selId=${route[0].id} onSelect=${select} collapsed=${collapsed} onToggle=${toggleFolder} manage=${true} actions=${actions} />
+                        <${S.Library} items=${state.items} selId=${route[0].id} onSelect=${select} collapsed=${collapsed} onToggle=${toggleFolder} manage=${true} actions=${actions} />
                         <input type="file" class="d-none" multiple accept=".ps1,.bat,.cmd,.sh,.bash" ref=${fileInput} onChange=${function (e) { actions.upload(e.target.files, selected ? selected._id : null); e.target.value = ''; }} />
                     </div>
                     <div class="st-lib-detail card">
                         ${state.items == null ? html`<div class="text-center py-5"><${ST.Spinner} /></div>`
-                        : selected == null ? html`<div class="st-tab-body"><${ST.Empty} icon="file-earmark-code">Choose a script or folder in the library, or create one.
-                            <div class="mt-3"><button class="btn btn-primary" onClick=${actions.newScript}><${ST.Icon} name="file-earmark-plus" class="me-1" />New script</button></div></${ST.Empty}></div>`
+                        : selected == null ? html`<div class="st-tab-body"><${ST.Empty} icon="file-earmark-code">${items.some(function (i) { return i.type == 'script'; }) ? 'Choose a script or folder in the library, or create one.' : 'No scripts yet. Create one, or upload .ps1, .bat and .sh files (you can also drop them on the library).'}
+                            <div class="mt-3 d-flex gap-2 justify-content-center"><button class="btn btn-primary" onClick=${actions.newScript}><${ST.Icon} name="file-earmark-plus" class="me-1" />New script</button>
+                                <button class="btn st-btn-quiet" onClick=${actions.pickUpload}><${ST.Icon} name="upload" class="me-1" />Upload</button></div></${ST.Empty}></div>`
                         : selected.type == 'folder' ? html`<${FolderPanel} key=${selected._id} item=${selected} items=${items} actions=${actions} />`
                         : html`<${ScriptWorkspace} key=${selected._id} item=${selected} vars=${state.vars} settings=${state.init.settings} actions=${actions} scheduleActions=${scheduleActions} onDirty=${function (d) { dirty.current = d; }} />`}
                     </div>

@@ -30,7 +30,9 @@
             <div class="card-header"><${ST.Icon} name="play-fill" />Run a script</div>
             <div class="card-body">
                 <${S.ScriptPicker} items=${props.items} value=${props.runId} onChange=${props.onChoose} favourites=${props.favourites} onToggleFav=${props.onToggleFav} compat=${compatibility} />
-                ${item == null ? html`<div class="form-text mt-2">Choose a script. Star the ones you use often to keep them at the top.</div>` : html`
+                ${item == null ? html`<div class="form-text mt-2">${props.loaded && !props.items.some(function (i) { return i.type == 'script'; })
+                    ? (props.manage ? html`The library is empty. <a href="#" onClick=${function (e) { e.preventDefault(); a.openLibrary(null); }}>Add scripts on the ScriptTask page</a>.` : 'The library is empty. Ask a ScriptTask manager to add scripts.')
+                    : 'Choose a script. Star the ones you use often to keep them at the top.'}</div>` : html`
                 <div class="st-chosen">
                     <div class="st-script-head">
                         <span class="st-script-name">${item.name}</span>
@@ -132,7 +134,7 @@
         var caps = state.init ? state.init.caps : null;
         var manage = caps != null && caps.manage;
 
-        var loadTree = function () { return ST.rpc('tree').then(function (items) { patch({ items: items }); }); };
+        var loadTree = function () { return ST.rpc('tree').then(function (items) { patch({ items: items, treeLoaded: true }); }); };
         var loadNode = function () { return ST.rpc('nodeData', { nodeId: node._id }).then(function (d) { patch({ data: d }); }); };
         var loadVars = function () { return ST.rpc('variables').then(function (v) { patch({ vars: v }); }); };
 
@@ -235,6 +237,17 @@
         });
 
         useEffect(function () { if (state.init || state.error) document.body.classList.remove('st-loading'); }, [state.init, state.error]);
+        // "/" focuses the script picker
+        useEffect(function () {
+            var onKey = function (e) {
+                if (e.key != '/' || e.ctrlKey || e.metaKey || e.altKey || document.querySelector('.st-modal-layer')) return;
+                if (e.target && e.target.closest && e.target.closest('input, textarea, select, .cm-editor')) return;
+                var input = document.querySelector('input[role="combobox"]');
+                if (input) { e.preventDefault(); input.focus(); }
+            };
+            document.addEventListener('keydown', onKey);
+            return function () { document.removeEventListener('keydown', onKey); };
+        }, []);
 
         if (document.documentElement.getAttribute('data-st-classic') == '1') {
             return html`<div class="alert alert-info st-classic-notice"><strong>ScriptTask needs the Modern UI.</strong> Switch to it from your account menu, then reopen this device.</div>`;
@@ -254,7 +267,7 @@
             ${!caps.run ? html`<div class="alert alert-warning py-2"><${ST.Icon} name="lock" class="me-1" />${caps.remoteCommand
                 ? 'You don\'t have the ScriptTask "Run scripts" permission on this device.'
                 : 'You can\'t run scripts on this device. It needs the Remote Commands right in its device group.'}</div>` : null}
-            ${(caps.run || manage) ? html`<${RunCard} items=${state.items} runId=${runId} onChoose=${choose} favourites=${favourites} onToggleFav=${toggleFav} canRun=${caps.run} manage=${manage} actions=${actions} />` : null}
+            ${(caps.run || manage) ? html`<${RunCard} items=${state.items} loaded=${state.treeLoaded === true} runId=${runId} onChoose=${choose} favourites=${favourites} onToggleFav=${toggleFav} canRun=${caps.run} manage=${manage} actions=${actions} />` : null}
             ${caps.run ? (d == null ? html`<${ST.Spinner} />` : html`
                 <${QueueCard} data=${d} manage=${manage} user=${state.init.user} actions=${actions} scriptName=${scriptName} />
                 <div class="card st-card">

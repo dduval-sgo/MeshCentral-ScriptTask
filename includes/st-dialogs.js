@@ -16,7 +16,12 @@
     function localInput(d) { return d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate()) + 'T' + pad(d.getHours()) + ':' + pad(d.getMinutes()); }
     function fromLocalInput(v) { var t = new Date(v).getTime(); return isNaN(t) ? null : Math.floor(t / 1000); }
     // The next whole step (in minutes) at least a minute from now
-    function nextStep(step) { var d = new Date(Date.now() + 60000); d.setSeconds(0, 0); d.setMinutes(Math.ceil(d.getMinutes() / step) * step); return d; }
+    function nextStep(step) {
+        var d = new Date(Date.now() + 60000);
+        if (d.getSeconds() || d.getMilliseconds()) d.setMinutes(d.getMinutes() + 1, 0, 0); // Round up, never down
+        d.setMinutes(Math.ceil(d.getMinutes() / step) * step);
+        return d;
+    }
 
     // ---- Schedule ----
 

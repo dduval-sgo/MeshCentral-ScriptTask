@@ -4,12 +4,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Known Issues]
-- None. Please feel free to submit an issue via [GitHub](https://github.com/ryanblenis/MeshCentral-ScriptTask) if you find anything.
+- None. Please feel free to submit an issue via [GitHub](https://github.com/dduval-sgo/MeshCentral-ScriptTask/issues) if you find anything.
 
-## [Unreleased]
+## [0.1.0] - 2026-10-23
 ### Changed
-- Device tab rebuilt with Bootstrap and Preact, in a single column: run a script, queue, history, then manager tools (library and variables) for ScriptTask managers. It follows the MeshCentral Modern UI's theme and light/dark mode, including live switching. Classic UI is no longer supported.
-- Script editor and scheduler open as dialogs in the tab instead of popup windows. The editor indents with Tab/Shift+Tab and saves with Ctrl+S. The scheduler uses the browser's date and time inputs.
+- Redesigned for MeshCentral's Modern UI, with Bootstrap and Preact. Pages follow MeshCentral's theme and light/dark mode, including live switching. Classic UI is no longer supported.
+- Device tab in a single column: run a script, the device's queue and schedules, its history, and for ScriptTask managers the variables that apply to it.
+- The scheduler opens as a dialog instead of a popup window, and uses the browser's date and time inputs.
 - Pages talk to the server through targeted request/reply messages. Changes are announced with small notices, sent only to users who can see the affected device, instead of broadcasting history, output and variable values.
 - Requires MeshCentral 1.2.0 or later. Update URLs point to this fork.
 
@@ -38,9 +39,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - Variables section: all variables in one table, with search, a scope filter, where each is used, and a warning for names scripts use that aren't defined. New variables can target any script, device group or device from a list.
 - Secret variables: hidden in lists and in the editor until revealed. Scripts still receive the value.
 - Settings for how long history is kept (default 90 days) and when a run is flagged "No result yet" (default 30 minutes).
+- Settings for how often the queue checks for due runs (default 60 seconds), rows per page on the ScriptTask page, the start-time step for new schedules, and the indentation for scripts that don't have any yet.
+- Keyboard shortcuts on the ScriptTask page (press ? to list them), and / to focus the script picker on the device tab.
+- Readme rewritten, with screenshots.
 - Server tests (`node --test test/*.test.js`).
 
 ### Fixed
+- A new schedule's default start time could be only seconds away, and already past when saved. It is now always at least a minute ahead.
 - Schedules are calculated in the time zone they were created in, so "daily at 09:00" stays at 09:00 across daylight-saving changes.
 - A device that was offline no longer gets a burst of catch-up runs for a weekly schedule, and a schedule's end time is honoured.
 - Script names, variable values and script output are no longer inserted into the page as HTML.
