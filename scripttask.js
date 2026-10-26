@@ -135,6 +135,30 @@ module.exports.scripttask = function (parent) {
 
     // ---- Queue ----
 
+    // Built-in variables, filled in when a run is sent. Device details are read from MeshCentral only if the script uses them.
+    var DEVICE_VARS = ['GBL:nodeName', 'GBL:meshName', 'GBL:tags', 'GBL:os'];
+    obj.builtInVars = async function(job, script, names) {
+        var agent = obj.meshServer.webserver.wsagents[job.node];
+        var meshId = agent ? agent.dbMeshKey : null;
+        var v = {
+            'GBL:nodeId': job.node,
+            'GBL:meshId': meshId,
+            'GBL:runBy': job.runBy || 'unknown',
+            'GBL:scriptName': script.name,
+            'GBL:runTime': new Date().toISOString()
+        };
+        if (DEVICE_VARS.some(function(n) { return names.indexOf(n) >= 0; })) {
+            var node = await new Promise(function(resolve) { obj.meshServer.db.Get(job.node, function(err, docs) { resolve((docs && docs[0]) || null); }); });
+            if (node != null && meshId == null) meshId = node.meshid;
+            var meshes = obj.meshServer.webserver.meshes || {};
+            v['GBL:nodeName'] = node ? (node.name || '') : '';
+            v['GBL:tags'] = (node && Array.isArray(node.tags)) ? node.tags.join(',') : '';
+            v['GBL:os'] = node ? (node.osdesc || '') : '';
+            v['GBL:meshName'] = (meshId && meshes[meshId]) ? meshes[meshId].name : '';
+        }
+        return v;
+    };
+
     obj.sending = new Set(); // Jobs being sent right now, so overlapping queue runs don't send one twice
 
     obj.queueRun = async function() {
@@ -182,9 +206,7 @@ module.exports.scripttask = function (parent) {
                               || a.name.localeCompare(b.name);
                         });
                         // Built-ins are the least specific values: a variable with the same name at any scope replaces them
-                        replaceVars['GBL:meshId'] = obj.meshServer.webserver.wsagents[job.node]['dbMeshKey'];
-                        replaceVars['GBL:nodeId'] = job.node;
-                        replaceVars['GBL:runBy'] = job.runBy || 'unknown';
+                        Object.assign(replaceVars, await obj.builtInVars(job, script, foundVarNames));
                         finvals.forEach(fv => {
                             replaceVars[fv.name] = fv.value;
                         });

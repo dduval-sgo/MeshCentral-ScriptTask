@@ -6,6 +6,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 ## [Known Issues]
 - None. Please feel free to submit an issue via [GitHub](https://github.com/dduval-sgo/MeshCentral-ScriptTask/issues) if you find anything.
 
+## [0.1.3] - 2026-10-26
+### Added
+- Built-in variables `#GBL:nodeName#`, `#GBL:meshName#`, `#GBL:tags#`, `#GBL:os#`, `#GBL:scriptName#` and `#GBL:runTime#`. Device details are read from MeshCentral when the run is sent, only for scripts that use them. ([#9](https://github.com/dduval-sgo/MeshCentral-ScriptTask/issues/9))
+
+### Fixed
+- PowerShell scripts on Windows that asked for input (`Read-Host`, `pause`, a confirmation prompt) could hang like Batch scripts did (#6). PowerShell now runs non-interactively, so a prompt fails with an error instead of waiting.
+- Variable values containing `$&`, `$1`, `$$` and similar were changed when inserted into a script, and a value containing `#text#` was turned into VAR_NOT_FOUND. Values are now inserted exactly as written.
+
 ## [0.1.2] - 2026-10-26
 ### Added
 - Maximum run time: a setting (default 120 minutes; 0 for no limit) after which the device stops a script, and any programs it started, and records the run as an error with the output so far. Sent with each run, so it applies to runs sent after it changes. ([#5](https://github.com/dduval-sgo/MeshCentral-ScriptTask/issues/5))

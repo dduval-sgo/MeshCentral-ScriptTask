@@ -3,7 +3,7 @@
 * @author Ryan Blenis
 * @author Desmond Duval (modifications)
 * Modified by Desmond Duval, 2026: private work folder with cleanup, running-job tracking, checkJobs, maximum run time,
-* scripts' input from NUL or /dev/null. See changelog.md.
+* scripts' input from NUL or /dev/null, PowerShell -NonInteractive, variable values inserted literally. See changelog.md.
 * @copyright 
 * @license Apache-2.0
 */
@@ -284,7 +284,7 @@ function runPowerShell(sObj, jObj, dir) {
     try {
         fs.writeFileSync(pName, sObj.content);
         var outstr = '', errstr = '';
-        var child = require('child_process').execFile(process.env['windir'] + '\\system32\\WindowsPowerShell\\v1.0\\powershell.exe', ['-NoLogo', '-NoProfile', '-ExecutionPolicy Bypass'] );
+        var child = require('child_process').execFile(process.env['windir'] + '\\system32\\WindowsPowerShell\\v1.0\\powershell.exe', ['-NoLogo', '-NoProfile', '-ExecutionPolicy Bypass', '-NonInteractive'] ); // Prompts (Read-Host, confirmations) fail instead of reading our "exit"
         child.stderr.on('data', function (chunk) { errstr += chunk; });
         child.stdout.on('data', function (chunk) { });
         runningJobPIDs[jObj.jobId] = child.pid;
@@ -562,12 +562,17 @@ function runScript(sObj, jObj) {
     }
     if (jobIsRunning(jObj)) { dbg('Job already running job id [' + jObj.jobId + ']. Skipping.'); return; }
     if (jObj.replaceVars != null) {
+        // Known names become placeholders first, then other #names# become VAR_NOT_FOUND, then the values go in.
+        // So a value is inserted exactly as written: "$&" or "#text#" inside it is never treated as a pattern or a name.
+        var values = [];
         Object.getOwnPropertyNames(jObj.replaceVars).forEach(function(key) {
-          var val = jObj.replaceVars[key];
-          sObj.content = sObj.content.replace(new RegExp('#'+key+'#', 'g'), val);
-          dbg('replacing var '+ key + ' with ' + val);
+            var token = '\u0000' + values.length + '\u0000';
+            values.push([token, (jObj.replaceVars[key] == null) ? '' : String(jObj.replaceVars[key])]);
+            sObj.content = sObj.content.split('#' + key + '#').join(token);
+            dbg('replacing var ' + key);
         });
         sObj.content = sObj.content.replace(new RegExp('#(.*?)#', 'g'), 'VAR_NOT_FOUND');
+        values.forEach(function(v) { sObj.content = sObj.content.split(v[0]).join(v[1]); });
     }
     runningJobs.push(jObj.jobId);
     dbg('Running Script '+ sObj._id);
