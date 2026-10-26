@@ -6,6 +6,24 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 ## [Known Issues]
 - None. Please feel free to submit an issue via [GitHub](https://github.com/dduval-sgo/MeshCentral-ScriptTask/issues) if you find anything.
 
+## [0.1.1] - 2026-10-26
+### Fixed
+- Runs are sent to their device once. Before, a run that had been sent but hadn't reported back was sent again at every queue check and every reconnect, so a script that rebooted the device looped, and interrupted scripts ran twice. When a device's agent reconnects, ScriptTask now asks it which of its runs are still going; the others are recorded as **Interrupted** (an error, with Run again) and aren't rerun. If the result arrives later after all, it replaces "Interrupted". ([#2](https://github.com/dduval-sgo/MeshCentral-ScriptTask/issues/2))
+- Script and output files no longer pile up on devices or sit in folders other users can read. They're written to a `scripttask` folder next to the agent, open only to SYSTEM and Administrators on Windows (`chmod 700` elsewhere), which is emptied when the agent starts. Files left by earlier versions in the agent's folder or temp folders are removed. ([#3](https://github.com/dduval-sgo/MeshCentral-ScriptTask/issues/3))
+- The agent's list of running jobs could drop the wrong job, so a job could start twice or appear to run forever. ([#4](https://github.com/dduval-sgo/MeshCentral-ScriptTask/issues/4))
+- Two runs waiting for the same script on a device could get the first run's variable values.
+- Lists were slow with a large history: the ScriptTask page read every job on every request to find which devices had jobs, and on MongoDB the indexes weren't created at all on a new database. With 100,000 runs, History's first page went from 1.8 s to 0.7 s on NeDB and from 0.8 s to 0.1 s on MongoDB; Overview from 2.1 s to 0.1 s (NeDB) and 0.9 s to 0.03 s (MongoDB); Queue, Batches and the queue check now take milliseconds. New indexes are added on MongoDB and NeDB, and startup no longer drops and rebuilds every MongoDB index when there aren't exactly six. ([#8](https://github.com/dduval-sgo/MeshCentral-ScriptTask/issues/8))
+- A variable defined with the same name as a built-in (`GBL:nodeId`, `GBL:meshId`, `GBL:runBy`) was ignored: the built-in value always won. Built-ins are now the least specific level, so any variable with the same name replaces them, and the editor and Variables pages say so.
+- Installing, reinstalling or upgrading the plugin without restarting MeshCentral could keep the previous version's code running, because MeshCentral's module cache isn't cleared. ScriptTask now compares its version with the one on disk and loads the new files itself.
+- A copy of the plugin that has been replaced (by a reload, reinstall or upgrade), disabled or removed stops checking the queue, so two copies never send the same runs.
+
+### Changed
+- Scripts on Windows now start in the `scripttask` folder rather than the agent's folder. Scripts that save files using relative paths should use full paths.
+- Readme: restart MeshCentral after installing, upgrading or removing the plugin.
+
+### Added
+- Tests for the agent-side module (`test/agent.test.js`).
+
 ## [0.1.0] - 2026-10-23
 ### Changed
 - Redesigned for MeshCentral's Modern UI, with Bootstrap and Preact. Pages follow MeshCentral's theme and light/dark mode, including live switching. Classic UI is no longer supported.

@@ -24,9 +24,11 @@ In MeshCentral, go to **My Server > Plugins**, choose **Download Plugin**, and e
 https://raw.githubusercontent.com/dduval-sgo/MeshCentral-ScriptTask/master/config.json
 ```
 
-Then enable the plugin.
+Then enable the plugin, and **restart MeshCentral**.
 
-**Switching from the original plugin:** both use the plugin name `scripttask` and the same database (`plugin-scripttask.db` in `meshcentral-data` for NeDB, or the `plugin_scripttask` collection for MongoDB), so scripts, schedules, history and variables carry over. Back up your data first, remove the original plugin, then install this one. Existing schedules keep working as before: they run when an offline device reconnects, on their original timetable.
+**Restart MeshCentral after installing, upgrading or removing the plugin.** MeshCentral keeps a plugin's server code in memory until it restarts. Without a restart, a newly installed version can keep running the previous version's code: you'd see the old pages, or "Unauthorized" on the ScriptTask page. From version 0.1.1, ScriptTask notices a version change and loads its new code itself, but a restart is still the reliable way. After restarting, reload MeshCentral in your browser (Ctrl+F5).
+
+**Switching from the original plugin:** both use the plugin name `scripttask` and the same database (`plugin-scripttask.db` in `meshcentral-data` for NeDB, or the `plugin_scripttask` collection for MongoDB), so scripts, schedules, history and variables carry over. Back up your data first, remove the original plugin, install this one, then restart MeshCentral. The original plugin can't detect the change, so the restart is required here. Existing schedules keep working as before: they run when an offline device reconnects, on their original timetable.
 
 ## Where to find it
 
@@ -89,11 +91,17 @@ A run only happens while its device is online. Each schedule chooses what happen
 - **If the device is offline:** run when it reconnects, run only if it reconnects within a set time, or skip. Runs that don't happen are recorded as **Missed**. A device that was offline never gets a burst of catch-up runs: only the latest due run is kept.
 - **If a run happens late:** keep the original timetable, or shift the following runs to when it actually ran.
 
+Each run is sent to its device once. If the device or its agent restarts before the script reports back (a script that reboots the device, for example), the run is recorded as **Interrupted** and isn't run again; use Run again if you want it rerun.
+
+## On the device
+
+The agent writes each script, with its variables filled in, and its output to a `scripttask` folder next to the agent program (for example `C:\Program Files\Mesh Agent\scripttask`). Only SYSTEM and Administrators can open it on Windows, and only root elsewhere. The files are deleted when the script finishes, and the folder is emptied whenever the agent starts. Scripts start in that folder, so use full paths for files you want to keep.
+
 ## Variables
 
-Scripts can use variables written as `#name#`. A variable can apply to all devices (global), one script, one device group, or one device. When names match, the most specific value wins: device, then device group, then script, then global. Names with no value anywhere are replaced with `VAR_NOT_FOUND`.
+Scripts can use variables written as `#name#`. A variable can apply to all devices (global), one script, one device group, or one device. When names match, the most specific value wins: device, then device group, then script, then global, then built-in. Names with no value anywhere are replaced with `VAR_NOT_FOUND`.
 
-Built-in variables: `#GBL:nodeId#`, `#GBL:meshId#` and `#GBL:runBy#`.
+Built-in variables: `#GBL:nodeId#`, `#GBL:meshId#` and `#GBL:runBy#`. They are the least specific level, so a variable you define with the same name (at any scope) replaces the built-in value.
 
 Values are filled in when the run is sent to the device, so the latest script and variable values are used. **Secret** variables are hidden in lists and in the editor until revealed. Scripts still receive the real value, so their output can show it.
 
@@ -110,6 +118,8 @@ Values are filled in when the run is sent to the device, so the latest script an
 | Indentation for scripts that don't have any yet | PowerShell and Batch 4 spaces, Bash 2 spaces |
 
 Due runs start as soon as a device connects, whatever the queue interval.
+
+**Large histories:** with NeDB (MeshCentral's default database), History searches every finished run, so its pages slow down as history grows: about 0.7 s per page with 100,000 runs. MongoDB uses indexes and stays around 0.1 s. Keeping history for fewer days also helps.
 
 ## Screenshots
 

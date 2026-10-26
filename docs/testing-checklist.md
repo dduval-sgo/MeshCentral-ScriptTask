@@ -12,9 +12,10 @@ Mark each item ✅ or note what happened.
 
 ## 1. Install
 
-- [ ] **Fresh install:** in My Server > Plugins, Download Plugin with the `config.json` URL, then enable it. ScriptTask appears in the plugin list, version 0.1.0.
-- [ ] **Upgrade from the original plugin** (on a copy of real data): remove the original, install this one. The library, schedules, history and variables are all there. Existing schedules show their next run, and one fires at its usual time.
-- [ ] Restart MeshCentral: no ScriptTask errors in the console or `mesherrors.txt`.
+- [ ] **Fresh install:** in My Server > Plugins, Download Plugin with the `config.json` URL, enable it, and restart MeshCentral. ScriptTask appears in the plugin list with the version in `config.json`.
+- [ ] **Upgrade from the original plugin** (on a copy of real data): remove the original, install this one, restart MeshCentral, and reload the browser page (Ctrl+F5). The library, schedules, history and variables are all there. Existing schedules show their next run, and one fires at its usual time.
+- [ ] No ScriptTask errors in the console or `mesherrors.txt` after the restart.
+- [ ] **Upgrade without a restart** (from 0.1.1 to a later version): use Upgrade in the plugin list. The console says "ScriptTask: loading version …", and the new pages appear after reloading the browser page.
 
 ## 2. Running scripts on real agents
 
@@ -27,6 +28,10 @@ On a device's **Plugins** tab, ScriptTask section:
 - [ ] **JSON output:** a script that prints JSON shows formatted in the output viewer.
 - [ ] **Error:** a script that writes to stderr or exits with an error shows as Error, with the message.
 - [ ] **Long-running script** (e.g. `sleep 120`): shows Running, then completes. With "Flag runs with no result after" set to 5 minutes, a script that hangs longer shows "No result yet".
+- [ ] **Reboot script** (e.g. `shutdown /r /t 5` or `sleep 5; reboot`): the device restarts once. When its agent reconnects, the run shows as Error ("Interrupted…") and does not run again.
+- [ ] **Work folder:** while a long script runs, `scripttask` next to the agent holds `st….ps1/.bat/.sh` and `.txt` files. A non-admin user on the device can't open the folder (Windows: Access denied; Linux: permission denied). After the run, the folder is empty.
+- [ ] **Leftovers from older versions:** `st*.ps1`/`st*.txt` files in the Mesh Agent folder (Windows) or `/tmp` (Linux) are gone after the agent restarts.
+- [ ] **Running twice:** while a long script runs, restart MeshCentral (not the device). The run keeps going, isn't started again, and reports its result.
 
 ## 3. Variables
 

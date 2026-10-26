@@ -134,12 +134,13 @@ module.exports.CreateDB = function(meshserver) {
           var jObj = {...defaultObj, ...passedObj};
           
           if (jObj.node == null || jObj.scriptId == null) { console.log('PLUGIN: SciptTask: Could not add job'); return false; }
-          
+          noteNodeInUse(jObj.node);
           return obj.scriptFile.insertOne(jObj);
         };
         obj.addJobSchedule = function(schedObj) {
             schedObj.type = 'jobSchedule';
             if (schedObj.node == null || schedObj.scriptId == null) { console.log('PLUGIN: SciptTask: Could not add job schedule'); return false; }
+            noteNodeInUse(schedObj.node);
             return obj.scriptFile.insertOne(schedObj);
         };
         obj.removeJobSchedule = function (id) {
@@ -174,10 +175,24 @@ module.exports.CreateDB = function(meshserver) {
             return obj.scriptFile.find( { type: 'jobSchedule' } ).toArray();
         };
         // Every device that has a job or schedule
+        // Devices that have jobs or schedules. Every list request needs this, so it's kept in memory: added to as jobs
+        // and schedules are created, and reloaded every minute (another MeshCentral server may share a MongoDB database).
+        var nodesInUse = null, nodesInUseAt = 0, nodesInUseLoading = null;
         obj.getNodeIdsInUse = function() {
-            return obj.scriptFile.find( { type: { $in: [ 'job', 'jobSchedule' ] } } ).project( { node: 1 } ).toArray()
-            .then((docs) => Array.from(new Set(docs.map(d => d.node).filter(n => typeof n == 'string'))));
+            if (nodesInUse != null && Date.now() - nodesInUseAt < 60000) return Promise.resolve(Array.from(nodesInUse));
+            if (nodesInUseLoading != null) return nodesInUseLoading;
+            var load = (obj.scriptFilex != null)
+                ? Promise.resolve(obj.scriptFilex.getAllData().filter((d) => d.type == 'job' || d.type == 'jobSchedule').map((d) => d.node)) // NeDB: read in place, no copies
+                : obj.scriptFile.distinct('node', { type: { $in: [ 'job', 'jobSchedule' ] } });
+            nodesInUseLoading = load.then((ids) => {
+                nodesInUse = new Set(ids.filter((n) => typeof n == 'string'));
+                nodesInUseAt = Date.now();
+                nodesInUseLoading = null;
+                return Array.from(nodesInUse);
+            }, (e) => { nodesInUseLoading = null; throw e; });
+            return nodesInUseLoading;
         };
+        function noteNodeInUse(nodeId) { if (nodesInUse != null && typeof nodeId == 'string') nodesInUse.add(nodeId); }
         // Batches: one run or schedule across several devices. Their jobs carry batchId (and slot, for scheduled batches).
         obj.addBatch = function(batch) {
             return obj.scriptFile.insertOne(Object.assign({ type: 'batch' }, batch));
@@ -186,10 +201,10 @@ module.exports.CreateDB = function(meshserver) {
             return obj.scriptFile.find( { type: 'batch', batchId: batchId } ).toArray().then((docs) => docs[0] || null);
         };
         obj.getBatches = function(skip, limit) {
-            return obj.scriptFile.find( { type: 'batch' } ).sort( { createdMs: -1 } ).skip(skip || 0).limit(limit || 20).toArray();
+            return obj.scriptFile.find( { type: 'batch', createdMs: { $gt: 0 } } ).sort( { createdMs: -1 } ).skip(skip || 0).limit(limit || 20).toArray();
         };
         obj.countBatches = function() {
-            return obj.scriptFile.countDocuments( { type: 'batch' } );
+            return obj.scriptFile.countDocuments( { type: 'batch', createdMs: { $gt: 0 } } );
         };
         obj.getJobsForBatches = function(batchIds) {
             return obj.scriptFile.find( { type: 'job', batchId: { $in: batchIds } } ).toArray();
@@ -224,7 +239,7 @@ module.exports.CreateDB = function(meshserver) {
               type: 'job', 
               node: { $in: nodeScope },
               completeTime: null,
-              //dispatchTime: null,
+              dispatchTime: null, // A run is sent once; see checkSentJobs for runs whose device restarted
               $and: [
                   { $or: [ { dontQueueUntil: null }, { dontQueueUntil: { $lte: nowTime } } ] },
                   { $or: [ { expiresAt: { $exists: false } }, { expiresAt: null }, { expiresAt: { $gt: nowTime } } ] }
@@ -346,21 +361,30 @@ module.exports.CreateDB = function(meshserver) {
           const db = client.db(dbname);
           
           obj.scriptFile = db.collection('plugin_scripttask');
+          // Create the indexes that are missing, and replace any whose definition changed. Others are left alone.
+          var wanted = {
+              ScriptName1: { name: 1 },
+              ScriptPath1: { path: 1 },
+              JobTime1: { queueTime: 1 },
+              JobNode1: { node: 1 },
+              JobScriptID1: { scriptId: 1 },
+              TypeComplete1: { type: 1, completeTime: -1 },                  // History, queue, Overview
+              TypeNodeComplete1: { type: 1, node: 1, completeTime: -1 },     // A device's runs and pending jobs
+              TypeScriptComplete1: { type: 1, scriptId: 1, completeTime: -1 }, // A script's runs
+              TypeCreated1: { type: 1, createdMs: -1 },                      // Batches, newest first
+              Batch1: { batchId: 1 }
+          };
           obj.scriptFile.indexes(function (err, indexes) {
-              // Check if we need to reset indexes
-              var indexesByName = {}, indexCount = 0;
-              for (var i in indexes) { indexesByName[indexes[i].name] = indexes[i]; indexCount++; }
-              if ((indexCount != 6) || (indexesByName['ScriptName1'] == null) || (indexesByName['ScriptPath1'] == null) || (indexesByName['JobTime1'] == null) || (indexesByName['JobNode1'] == null) || (indexesByName['JobScriptID1'] == null)) {
-                  // Reset all indexes
-                  console.log('Resetting plugin (ScriptTask) indexes...');
-                  obj.scriptFile.dropIndexes(function (err) {
-                      obj.scriptFile.createIndex({ name: 1 }, { name: 'ScriptName1' });
-                      obj.scriptFile.createIndex({ path: 1 }, { name: 'ScriptPath1' });
-                      obj.scriptFile.createIndex({ queueTime: 1 }, { name: 'JobTime1' });
-                      obj.scriptFile.createIndex({ node: 1 }, { name: 'JobNode1' });
-                      obj.scriptFile.createIndex({ scriptId: 1 }, { name: 'JobScriptID1' });
-                  }); 
-              }
+              // On a new database the collection doesn't exist yet, so there is no list to read: create them all
+              if (err) indexes = [];
+              var existing = {};
+              (indexes || []).forEach(function (ix) { existing[ix.name] = JSON.stringify(ix.key); });
+              Object.keys(wanted).forEach(function (name) {
+                  var key = wanted[name];
+                  if (existing[name] === JSON.stringify(key)) return;
+                  var create = function () { obj.scriptFile.createIndex(key, { name: name }, function (e) { if (e) console.log('PLUGIN: ScriptTask: Could not create index ' + name + ': ' + e); }); };
+                  if (existing[name] != null) obj.scriptFile.dropIndex(name, create); else create();
+              });
           });
           
           
@@ -385,6 +409,10 @@ module.exports.CreateDB = function(meshserver) {
             obj.scriptFilex.ensureIndex({ fieldName: 'queueTime' });
             obj.scriptFilex.ensureIndex({ fieldName: 'node' });
             obj.scriptFilex.ensureIndex({ fieldName: 'scriptId' });
+            // NeDB uses one index per query, for a field compared at the top level of the query
+            obj.scriptFilex.ensureIndex({ fieldName: 'completeTime' });
+            obj.scriptFilex.ensureIndex({ fieldName: 'batchId', sparse: true });
+            obj.scriptFilex.ensureIndex({ fieldName: 'createdMs', sparse: true });
         }
         obj.scriptFile = new NEMongo(obj.scriptFilex);
         formatId = function(id) { return id; };

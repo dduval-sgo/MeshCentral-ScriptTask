@@ -9,8 +9,30 @@
 
 "use strict";
 
+// MeshCentral loads plugins with require(), and removing, reinstalling or upgrading a plugin doesn't clear Node's
+// module cache. Until MeshCentral restarts, require() can return the previous version of this file. So the factory
+// compares this code's version with the one on disk; when they differ, it drops the plugin's files from the cache
+// and builds the plugin from the new files instead.
+var path = require('path');
+function versionOnDisk() {
+    try { return JSON.parse(require('fs').readFileSync(path.join(__dirname, 'config.json'), 'utf8')).version; } catch (e) { return null; }
+}
+var LOADED_VERSION = versionOnDisk();
+var INSTANCE_KEY = Symbol.for('meshcentral.plugin.scripttask.instance');
+
 module.exports.scripttask = function (parent) {
+    var onDisk = versionOnDisk();
+    if (onDisk != null && LOADED_VERSION != null && onDisk != LOADED_VERSION) {
+        console.log('PLUGIN: ScriptTask: loading version ' + onDisk + ' in place of ' + LOADED_VERSION + '. Restart MeshCentral when convenient.');
+        Object.keys(require.cache).forEach(function (k) { if (k.startsWith(__dirname + path.sep)) delete require.cache[k]; });
+        return require(path.join(__dirname, 'scripttask.js')).scripttask(parent);
+    }
+    // An earlier instance in this process (the plugin was reloaded, reinstalled or upgraded without a restart) stops
+    // checking the queue, so two copies never send the same runs
+    if (global[INSTANCE_KEY] && typeof global[INSTANCE_KEY].shutdown == 'function') global[INSTANCE_KEY].shutdown();
+
     var obj = {};
+    global[INSTANCE_KEY] = obj;
     obj.parent = parent;
     obj.meshServer = parent.parent;
     obj.db = null;
@@ -18,7 +40,8 @@ module.exports.scripttask = function (parent) {
     obj.debug = obj.meshServer.debug;
     obj.VIEWS = __dirname + '/views/';
     obj.INCLUDES = __dirname + '/includes/';
-    obj.version = require(__dirname + '/config.json').version;
+    obj.version = LOADED_VERSION;
+    obj.stopped = false;
     obj.exports = [
         'onDeviceRefreshEnd',
         'getBus',
@@ -57,8 +80,20 @@ module.exports.scripttask = function (parent) {
     obj.timerSeconds = null;
     obj.resetQueueTimer = function() {
         clearInterval(obj.intervalTimer);
+        if (obj.stopped) return;
         obj.timerSeconds = obj.settingsCache ? obj.settingsCache.queueIntervalSeconds : obj.SETTINGS_DEFAULTS.queueIntervalSeconds;
         obj.intervalTimer = setInterval(obj.queueRun, obj.timerSeconds * 1000);
+    };
+
+    obj.shutdown = function() {
+        obj.stopped = true;
+        clearInterval(obj.intervalTimer);
+    };
+    // Disabling or removing the plugin drops it from MeshCentral's list without telling it; stop when that happens
+    obj.isActive = function() {
+        if (obj.stopped) return false;
+        if (parent.plugins != null && parent.plugins.scripttask !== obj) { obj.shutdown(); return false; }
+        return true;
     };
 
     obj.server_startup = function() {
@@ -100,7 +135,10 @@ module.exports.scripttask = function (parent) {
 
     // ---- Queue ----
 
+    obj.sending = new Set(); // Jobs being sent right now, so overlapping queue runs don't send one twice
+
     obj.queueRun = async function() {
+        if (!obj.isActive()) return;
         try { await obj.expireJobs(); } catch (e) { console.log('PLUGIN: ScriptTask: Could not expire jobs: ', e); }
         var onlineAgents = Object.keys(obj.meshServer.webserver.wsagents);
         //obj.debug('ScriptTask', 'Queue Running', Date().toLocaleString(), 'Online agents: ', onlineAgents);
@@ -110,6 +148,9 @@ module.exports.scripttask = function (parent) {
             if (jobs.length == 0) return;
             //@TODO check for a large number and use taskLimiter to queue the jobs
             jobs.forEach(job => {
+                var key = String(job._id);
+                if (obj.sending.has(key)) return;
+                obj.sending.add(key);
                 obj.db.get(job.scriptId)
                 .then(async (script) => {
                     script = script[0];
@@ -139,12 +180,13 @@ module.exports.scripttask = function (parent) {
                             return (ordering[a.scope] - ordering[b.scope])
                               || a.name.localeCompare(b.name);
                         });
-                        finvals.forEach(fv => {
-                            replaceVars[fv.name] = fv.value;
-                        });
+                        // Built-ins are the least specific values: a variable with the same name at any scope replaces them
                         replaceVars['GBL:meshId'] = obj.meshServer.webserver.wsagents[job.node]['dbMeshKey'];
                         replaceVars['GBL:nodeId'] = job.node;
                         replaceVars['GBL:runBy'] = job.runBy || 'unknown';
+                        finvals.forEach(fv => {
+                            replaceVars[fv.name] = fv.value;
+                        });
                         //console.log('FV IS', finvals);
                         //console.log('RV IS', replaceVars);
                     }
@@ -159,14 +201,16 @@ module.exports.scripttask = function (parent) {
                         scriptHash: script.contentHash,
                         dispatchTime: dispatchTime
                     };
-                    //obj.debug('ScriptTask', 'Sending job to agent');
-                    try {
-                        obj.meshServer.webserver.wsagents[job.node].send(JSON.stringify(jObj));
-                        obj.db.update(job._id, { dispatchTime: dispatchTime })
-                        .then(() => { obj.invalidate({ nodeIds: [job.node] }); });
-                    } catch (e) { }
+                    // Recorded as sent before sending: it is never sent again (see checkSentJobs)
+                    var agent = obj.meshServer.webserver.wsagents[job.node];
+                    if (agent == null) return;
+                    await obj.db.update(job._id, { dispatchTime: dispatchTime });
+                    try { agent.send(JSON.stringify(jObj)); }
+                    catch (e) { await obj.db.update(job._id, { dispatchTime: null }); return; }
+                    obj.invalidate({ nodeIds: [job.node] });
                 })
-                .catch(e => console.log('PLUGIN: ScriptTask: Could not dispatch job.', e));
+                .catch(e => console.log('PLUGIN: ScriptTask: Could not dispatch job.', e))
+                .then(() => { obj.sending.delete(key); });
             });
         })
         .then(() => {
@@ -301,7 +345,33 @@ module.exports.scripttask = function (parent) {
     obj.hook_agentCoreIsStable = function(agent) {
         clearTimeout(obj.connectTimer);
         obj.connectTimer = setTimeout(obj.queueRun, 3000); // One queue run for a burst of reconnecting devices
-        if (agent && typeof agent.dbNodeKey == 'string') obj.invalidate({ nodeIds: [agent.dbNodeKey] });
+        if (agent && typeof agent.dbNodeKey == 'string') {
+            obj.checkSentJobs(agent).catch(function(e) { console.log('PLUGIN: ScriptTask: Could not check sent jobs: ', e); });
+            obj.invalidate({ nodeIds: [agent.dbNodeKey] });
+        }
+    };
+
+    // Runs are sent once and never resent: rerunning after a reboot could repeat a script that rebooted the device.
+    // When a device's agent reconnects, ask it which of the runs it was sent are still running. The agent answers
+    // with jobsNotRunning, and those runs are recorded as interrupted. A result that arrives later still counts.
+    obj.INTERRUPTED = 'Interrupted: the device or its agent restarted before the script reported a result. It was not run again.';
+    obj.checkSentJobs = async function(agent) {
+        if (!obj.isActive() || obj.db == null) return;
+        var sent = (await obj.db.getIncompleteJobsForNode(agent.dbNodeKey)).filter(function(j) { return j.dispatchTime != null; });
+        if (sent.length == 0) return;
+        agent.send(JSON.stringify({ action: 'plugin', plugin: 'scripttask', pluginaction: 'checkJobs', jobIds: sent.map(function(j) { return String(j._id); }) }));
+    };
+    obj.markInterrupted = async function(agent, jobIds) {
+        var now = Math.floor(Date.now() / 1000), changed = false;
+        for (var jobId of (Array.isArray(jobIds) ? jobIds : []).slice(0, 1000)) {
+            var job = (await obj.db.get(String(jobId)))[0];
+            if (job == null || job.type != 'job' || job.node != agent.dbNodeKey || job.completeTime != null || job.dispatchTime == null) continue;
+            await obj.db.update(job._id, { completeTime: now, errorVal: obj.INTERRUPTED, interrupted: true });
+            // A scheduled run closes its slot as usual; the schedule carries on with its next one
+            if (job.jobSchedule != null) { await obj.closeSlot(job.jobSchedule, job); await obj.ensureScheduleJobs(job.jobSchedule); }
+            changed = true;
+        }
+        if (changed) obj.invalidate({ nodeIds: [agent.dbNodeKey] });
     };
 
     // ---- Change notices ----
@@ -617,6 +687,14 @@ module.exports.scripttask = function (parent) {
         if (typeof f.batchId == 'string' && f.batchId) out.batchId = f.batchId.substring(0, 64);
         return out;
     }
+    // A query for finished jobs on these devices. completeTime is a top-level range and the device list sits inside
+    // $and, so NeDB (one index per query, top-level fields only) narrows by time; MongoDB uses its compound indexes.
+    // A single device is a plain top-level match, which NeDB's node index handles best.
+    function jobQuery(nodeIds, completeTime) {
+        var find = { completeTime: completeTime, $and: [] };
+        if (nodeIds.length == 1) find.node = nodeIds[0]; else find.$and.push({ node: { $in: nodeIds } });
+        return find;
+    }
     function escapeRegex(s) { return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); }
     // The devices a query may cover: the requested ones that this user can see
     function nodeScope(filters, visible) {
@@ -680,14 +758,14 @@ module.exports.scripttask = function (parent) {
         obj.requireManage(session);
         var filters = cleanFilters(args.filters), p = page(args);
         var visible = await obj.visibleNodes(session);
-        var and = [ { completeTime: { $ne: null } }, { node: { $in: nodeScope(filters, visible) } } ];
-        if (filters.scriptId) and.push({ scriptId: filters.scriptId });
-        if (filters.batchId) and.push({ batchId: filters.batchId });
+        var find = jobQuery(nodeScope(filters, visible), { $gt: 0 }), and = find.$and;
+        if (filters.from) find.completeTime.$gte = filters.from;
+        if (filters.to) find.completeTime.$lte = filters.to;
+        if (filters.scriptId) find.scriptId = filters.scriptId;
+        if (filters.batchId) find.batchId = filters.batchId;
         if (filters.runBy) and.push({ runBy: { $regex: new RegExp(escapeRegex(filters.runBy), 'i') } });
         if (filters.source == 'manual') and.push({ jobSchedule: null });
         if (filters.source == 'schedule') and.push({ jobSchedule: { $ne: null } });
-        if (filters.from) and.push({ completeTime: { $gte: filters.from } });
-        if (filters.to) and.push({ completeTime: { $lte: filters.to } });
         switch (filters.status) {
             case 'missed': and.push({ missed: true }); break;
             case 'cancelled': and.push({ cancelled: true }); break;
@@ -695,7 +773,7 @@ module.exports.scripttask = function (parent) {
             case 'complete': and.push({ returnVal: { $ne: null } }, { cancelled: { $ne: true } }); break;
         }
         if (filters.q) { var re = new RegExp(escapeRegex(filters.q), 'i'); and.push({ $or: [ { returnVal: { $regex: re } }, { errorVal: { $regex: re } } ] }); }
-        var find = { $and: and };
+        if (and.length == 0) delete find.$and; // MongoDB rejects an empty $and
         var results = await Promise.all([ obj.db.countJobs(find), obj.db.findJobs(find, { completeTime: -1 }, p.skip, p.limit) ]);
         // Lists carry the start of the output only; the full output comes from obj.rpc.job
         var jobs = results[1].map(function(j) {
@@ -1123,13 +1201,14 @@ module.exports.scripttask = function (parent) {
         var queue = (await obj.db.getAllIncompleteJobs()).filter(function(j) { return visible.has(j.node); });
         var counts = { queued: 0, waiting: 0, scheduled: 0, dispatched: 0, stale: 0, missed: 0 };
         queue.forEach(function(j) { j.state = queueStatus(j, now); counts[j.state]++; });
-        var recent = { $and: [ { node: { $in: nodes } }, { completeTime: { $gte: since } } ] };
-        var failed = { $and: recent.$and.concat([ { errorVal: { $ne: null } }, { returnVal: null }, { missed: { $ne: true } }, { cancelled: { $ne: true } } ]) };
-        var missed = { $and: recent.$and.concat([ { missed: true } ]) };
-        var completed = { $and: recent.$and.concat([ { returnVal: { $ne: null } }, { cancelled: { $ne: true } } ]) };
+        // The last 24 hours, narrowed by completeTime first
+        var recent = function(extra) { var q = jobQuery(nodes, { $gte: since }); q.$and = q.$and.concat(extra); return q; };
+        var isFailed = [ { errorVal: { $ne: null } }, { returnVal: null }, { missed: { $ne: true } }, { cancelled: { $ne: true } } ];
+        var failed = recent(isFailed), missed = recent([ { missed: true } ]);
+        var completed = recent([ { returnVal: { $ne: null } }, { cancelled: { $ne: true } } ]);
         var r = await Promise.all([
             obj.db.countJobs(failed), obj.db.countJobs(missed), obj.db.countJobs(completed),
-            obj.db.findJobs({ $or: [ failed, missed ] }, { completeTime: -1 }, 0, 8),
+            obj.db.findJobs(recent([ { $or: [ { $and: isFailed }, { missed: true } ] } ]), { completeTime: -1 }, 0, 8),
             obj.db.getAllSchedules()
         ]);
         var schedules = r[4].filter(function(s) { return visible.has(s.node); });
@@ -1197,9 +1276,10 @@ module.exports.scripttask = function (parent) {
                     if (job == null || job.node != agent.dbNodeKey) return; // Agents may only report their own jobs
                     var update = { completeTime: completeTime, returnVal: retVal, errorVal: errVal, dispatchTime: dispatchTime };
                     if (job.cancelled) { update.completeTime = job.completeTime; update.errorVal = job.errorVal; update.lateReturnVal = retVal; update.lateErrorVal = errVal; delete update.returnVal; }
+                    if (job.interrupted) update.interrupted = false; // It finished after all: its real result replaces "Interrupted"
                     return obj.db.update(jobId, update)
                     .then(() => {
-                        if (job.jobSchedule == null || job.cancelled) return; // A cancelled run's slot was closed when it was cancelled
+                        if (job.jobSchedule == null || job.cancelled || job.interrupted) return; // Its slot was closed when it was cancelled or interrupted
                         return obj.db.get(job.jobSchedule)
                         .then((found) => {
                             if (found.length == 0) return;
@@ -1214,6 +1294,9 @@ module.exports.scripttask = function (parent) {
                     });
                 })
                 .catch(e => { console.log('PLUGIN: ScriptTask: Failed to complete job. ', e); });
+            break;
+            case 'jobsNotRunning':
+                obj.markInterrupted(agent, command.jobIds).catch(function(e) { console.log('PLUGIN: ScriptTask: Could not record interrupted jobs: ', e); });
             break;
             case 'clearAllPendingJobs':
                 obj.db.deletePendingJobsForNode(agent.dbNodeKey)

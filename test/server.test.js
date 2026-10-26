@@ -45,7 +45,8 @@ test.after(function () {
     });
 });
 
-function createPlugin() {
+// pluginDir: load the plugin from a copy of its files instead of this checkout
+function createPlugin(pluginDir) {
     const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'scripttask-test-'));
     const events = [];
     const meshServer = {
@@ -80,7 +81,7 @@ function createPlugin() {
             return registered[name][perm].default == 'allowed';
         }
     };
-    const plugin = require('../scripttask.js').scripttask(pluginHandler);
+    const plugin = require(path.join(pluginDir || path.join(__dirname, '..'), 'scripttask.js')).scripttask(pluginHandler);
     plugin.server_startup();
     clearInterval(plugin.intervalTimer);
     const ctx = { plugin, events, dataDir, registered };
@@ -622,4 +623,133 @@ test('history retention: old runs and their empty batches are deleted', async fu
     await wait(200);
     const left = await p.db.scriptFile.find({ type: { $in: ['job', 'batch'] } }).toArray();
     assert.deepStrictEqual(left.map(d => d.type + ':' + d.returnVal), ['job:y']);
+});
+
+test('upgrading in place without a restart loads the new files and stops the old copy', async function () {
+    // A copy of the plugin, loaded once, then "upgraded" on disk as MeshCentral's Upgrade button does
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'scripttask-plugin-'));
+    for (const f of ['scripttask.js', 'db.js', 'nemongo.js', 'schedule.js', 'config.json']) fs.copyFileSync(path.join(__dirname, '..', f), path.join(dir, f));
+    const ctx = createPlugin(dir); await ready(ctx);
+    const old = ctx.plugin;
+    old.resetQueueTimer();
+    const pluginHandler = old.parent;
+    pluginHandler.plugins = { scripttask: old };
+
+    const config = JSON.parse(fs.readFileSync(path.join(dir, 'config.json'), 'utf8'));
+    fs.writeFileSync(path.join(dir, 'config.json'), JSON.stringify(Object.assign(config, { version: '99.0.0' })));
+    fs.writeFileSync(path.join(dir, 'scripttask.js'), fs.readFileSync(path.join(dir, 'scripttask.js'), 'utf8').replace('var obj = {};', 'var obj = { upgraded: true };'));
+
+    // require() still returns the cached old module; its factory notices and builds from the new files
+    const cached = require(path.join(dir, 'scripttask.js'));
+    const fresh = cached.scripttask(pluginHandler);
+    assert.strictEqual(fresh.upgraded, true, 'built from the new scripttask.js');
+    assert.strictEqual(fresh.version, '99.0.0');
+    assert.strictEqual(old.stopped, true, 'the old copy stopped checking the queue');
+    assert.notStrictEqual(require(path.join(dir, 'scripttask.js')), cached, 'the cache now holds the new file');
+    // Building it again without a version change doesn't reload
+    assert.strictEqual(require(path.join(dir, 'scripttask.js')).scripttask(pluginHandler).upgraded, true);
+    contexts.push({ plugin: fresh, dataDir: fs.mkdtempSync(path.join(os.tmpdir(), 'scripttask-test-')) });
+    fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test('a plugin that MeshCentral disabled or removed stops checking the queue', async function () {
+    const ctx = createPlugin(); await ready(ctx);
+    const p = ctx.plugin;
+    p.parent.plugins = { scripttask: p };
+    assert.strictEqual(p.isActive(), true);
+    delete p.parent.plugins.scripttask;
+    await p.queueRun();
+    assert.strictEqual(p.stopped, true);
+    const before = p.intervalTimer;
+    p.resetQueueTimer();
+    assert.strictEqual(p.intervalTimer, before, 'no new queue timer once stopped');
+});
+
+test('a run is sent once; after the agent restarts, runs it no longer has are recorded as interrupted, not rerun', async function () {
+    const ctx = createPlugin(); await ready(ctx);
+    const p = ctx.plugin, sent = [];
+    const agent = { dbNodeKey: LIN, dbMeshKey: MESH, send: function (m) { sent.push(JSON.parse(m)); } };
+    p.meshServer.webserver.wsagents[LIN] = agent;
+    const sid = (await rpc(p, 'admin', 'addScript', { name: 'Reboot', filetype: 'bash', content: 'reboot' })).data.id;
+    await rpc(p, 'admin', 'runScript', { scriptId: sid, nodeIds: [LIN] });
+    await wait(150);
+    // Overlapping queue runs, then later ones: still sent once
+    await Promise.all([p.queueRun(), p.queueRun()]); await wait(150);
+    await p.queueRun(); await wait(150);
+    const triggers = sent.filter(m => m.pluginaction == 'triggerJob');
+    assert.strictEqual(triggers.length, 1, 'sent exactly once');
+    const jobId = triggers[0].jobId;
+
+    // The device reboots: its agent reconnects and is asked about the runs it was sent
+    sent.length = 0;
+    p.hook_agentCoreIsStable(agent); await wait(150);
+    const check = sent.find(m => m.pluginaction == 'checkJobs');
+    assert.deepStrictEqual(check.jobIds, [jobId]);
+    agentSends(p, WIN, { pluginaction: 'jobsNotRunning', jobIds: [jobId] }); await wait(150);
+    assert.strictEqual((await p.db.get(jobId))[0].completeTime, null, 'another device can\'t close this run');
+    agentSends(p, LIN, { pluginaction: 'jobsNotRunning', jobIds: [jobId] }); await wait(150);
+    let job = (await p.db.get(jobId))[0];
+    assert.ok(job.interrupted && job.completeTime != null && /Interrupted/.test(job.errorVal));
+    await p.queueRun(); await wait(150);
+    assert.strictEqual(sent.filter(m => m.pluginaction == 'triggerJob').length, 0, 'not rerun');
+
+    // If the result arrives after all, it replaces "Interrupted"
+    agentSends(p, LIN, { pluginaction: 'jobComplete', jobId: jobId, scriptId: sid, retVal: 'done', errVal: null, dispatchTime: job.dispatchTime }); await wait(150);
+    job = (await p.db.get(jobId))[0];
+    assert.deepStrictEqual([job.interrupted, job.returnVal], [false, 'done']);
+    delete p.meshServer.webserver.wsagents[LIN];
+});
+
+test('an interrupted scheduled run closes its slot and the schedule carries on', async function () {
+    const ctx = createPlugin(); await ready(ctx);
+    const p = ctx.plugin, sent = [];
+    const agent = { dbNodeKey: LIN, dbMeshKey: MESH, send: function (m) { sent.push(JSON.parse(m)); } };
+    p.meshServer.webserver.wsagents[LIN] = agent;
+    const r = await scheduleOn(ctx, 'admin', { recur: 'hourly', interval: 1, startAt: nowS() - 30 });
+    await p.queueRun(); await wait(150);
+    const first = sent.find(m => m.pluginaction == 'triggerJob');
+    assert.ok(first);
+    agentSends(p, LIN, { pluginaction: 'jobsNotRunning', jobIds: [first.jobId] }); await wait(200);
+    const jobs = await jobsFor(ctx, r.sid);
+    assert.strictEqual(jobs.length, 2);
+    assert.ok(jobs[0].interrupted);
+    assert.deepStrictEqual([jobs[1].completeTime, jobs[1].slot], [null, r.schedule.startAt + 3600], 'the next hourly run is scheduled');
+    delete p.meshServer.webserver.wsagents[LIN];
+});
+
+test('variables: more specific values win, and built-ins are the least specific', async function () {
+    const ctx = createPlugin(); await ready(ctx);
+    const p = ctx.plugin, sent = [];
+    p.meshServer.webserver.wsagents[LIN] = { dbNodeKey: LIN, dbMeshKey: MESH, send: function (m) { sent.push(JSON.parse(m)); } };
+    const sid = (await rpc(p, 'admin', 'addScript', { name: 'Vars', filetype: 'bash', content: 'echo #site# #GBL:runBy# #GBL:nodeId# #GBL:meshId#' })).data.id;
+    for (const v of [
+        { name: 'site', scope: 'global', value: 'global' },
+        { name: 'site', scope: 'script', scopeTarget: sid, value: 'script' },
+        { name: 'site', scope: 'mesh', scopeTarget: MESH, value: 'group' },
+        { name: 'GBL:runBy', scope: 'global', value: 'service account' },
+        { name: 'GBL:nodeId', scope: 'node', scopeTarget: LIN, value: 'lin-override' }
+    ]) assert.ok((await rpc(p, 'admin', 'addVar', v)).ok, v.name);
+    await rpc(p, 'admin', 'runScript', { scriptId: sid, nodeIds: [LIN] });
+    await p.queueRun(); await wait(200);
+    const vars = sent.find(m => m.pluginaction == 'triggerJob').replaceVars;
+    assert.deepStrictEqual(vars, { site: 'group', 'GBL:runBy': 'service account', 'GBL:nodeId': 'lin-override', 'GBL:meshId': MESH });
+    delete p.meshServer.webserver.wsagents[LIN];
+});
+
+test('a new MongoDB database gets every index (only runs against MongoDB)', { skip: !process.env.MONGODB_URL }, async function () {
+    const ctx = createPlugin(); await ready(ctx);
+    await wait(500);
+    const names = (await ctx.plugin.db.scriptFile.indexes()).map(i => i.name).sort();
+    for (const n of ['Batch1', 'JobNode1', 'JobScriptID1', 'JobTime1', 'ScriptName1', 'ScriptPath1', 'TypeComplete1', 'TypeCreated1', 'TypeNodeComplete1', 'TypeScriptComplete1']) assert.ok(names.includes(n), n + ' in ' + names.join(', '));
+});
+
+test('devices with jobs are tracked in memory, including ones added since the last load', async function () {
+    const ctx = createPlugin(); await ready(ctx);
+    const p = ctx.plugin;
+    const sid = (await rpc(p, 'admin', 'addScript', { name: 'Up', filetype: 'bash', content: 'uptime' })).data.id;
+    await rpc(p, 'admin', 'runScript', { scriptId: sid, nodeIds: [LIN] });
+    assert.deepStrictEqual(await p.db.getNodeIdsInUse(), [LIN]);
+    await rpc(p, 'admin', 'addSchedule', { scriptId: sid, nodeIds: [WIN], schedule: { recur: 'daily', interval: 1, startAt: nowS() + 600 } });
+    assert.deepStrictEqual((await p.db.getNodeIdsInUse()).sort(), [LIN, WIN].sort(), 'added without waiting for a reload');
+    assert.strictEqual((await rpc(p, 'admin', 'history', { filters: { nodeIds: [WIN] } })).ok, true, 'a single-device history query works');
 });
