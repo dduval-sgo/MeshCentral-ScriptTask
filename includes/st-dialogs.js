@@ -183,7 +183,7 @@
         var st = props.settings;
         var w = splitSpan(st.defaultOfflineWindow);
         var s = useState({ grace: Math.round(st.skipGraceSeconds / 60), offline: st.defaultOfflinePolicy, windowN: w[0], windowUnit: w[1], anchor: st.defaultAnchor, historyDays: st.historyDays, staleMinutes: st.staleMinutes,
-            queueIntervalSeconds: st.queueIntervalSeconds, pageSize: st.pageSize, scheduleStepMinutes: st.scheduleStepMinutes, indentPs1: st.indentPs1, indentBat: st.indentBat, indentBash: st.indentBash });
+            queueIntervalSeconds: st.queueIntervalSeconds, pageSize: st.pageSize, maxRunMinutes: st.maxRunMinutes, scheduleStepMinutes: st.scheduleStepMinutes, indentPs1: st.indentPs1, indentBat: st.indentBat, indentBash: st.indentBash });
         var f = s[0], setF = s[1];
         var busy = useState(false), err = useState(null);
         var set = function (k, v) { setF(function (o) { var n = Object.assign({}, o); n[k] = v; return n; }); };
@@ -191,7 +191,7 @@
             e.preventDefault();
             busy[1](true);
             ST.rpc('saveSettings', { skipGraceSeconds: Math.round(Number(f.grace) * 60), defaultOfflinePolicy: f.offline, defaultOfflineWindow: Math.round(Number(f.windowN) * f.windowUnit), defaultAnchor: f.anchor, historyDays: Number(f.historyDays), staleMinutes: Number(f.staleMinutes),
-                queueIntervalSeconds: Number(f.queueIntervalSeconds), pageSize: Number(f.pageSize), scheduleStepMinutes: Number(f.scheduleStepMinutes), indentPs1: f.indentPs1, indentBat: f.indentBat, indentBash: f.indentBash })
+                queueIntervalSeconds: Number(f.queueIntervalSeconds), pageSize: Number(f.pageSize), maxRunMinutes: Number(f.maxRunMinutes), scheduleStepMinutes: Number(f.scheduleStepMinutes), indentPs1: f.indentPs1, indentBat: f.indentBat, indentBash: f.indentBash })
             .then(function (saved) { busy[1](false); ST.ui.toast('Settings saved.'); props.onSaved(saved); }, function (ex) { busy[1](false); err[1](ex.message); });
         };
         return html`<form id="st-settings" class="st-settings" onSubmit=${submit}>
@@ -205,6 +205,11 @@
                     <label class="form-label" for="st-interval-check">Check the queue every</label>
                     <div class="input-group w-auto"><input type="number" min="15" max="600" step="5" class="form-control" id="st-interval-check" value=${f.queueIntervalSeconds} onInput=${function (e) { set('queueIntervalSeconds', e.target.value); }} /><span class="input-group-text">seconds</span></div>
                     <div class="form-text">How often due runs are sent to online devices and overdue ones are marked Missed. A device that connects gets its due runs straight away regardless.</div>
+                </div>
+                <div class="mb-3">
+                    <label class="form-label" for="st-max-run">Stop scripts that run longer than</label>
+                    <div class="input-group w-auto"><input type="number" min="0" max="10080" step="1" class="form-control" id="st-max-run" value=${f.maxRunMinutes} onInput=${function (e) { set('maxRunMinutes', e.target.value); }} /><span class="input-group-text">minutes</span></div>
+                    <div class="form-text">The device stops the script, and any programs it started, and the run is recorded as an error with the output so far. 0 means no limit. Applies to runs sent from now on.</div>
                 </div>
                 <div class="mb-3">
                     <label class="form-label" for="st-stale">Flag runs with no result after</label>

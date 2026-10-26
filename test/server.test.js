@@ -334,8 +334,8 @@ test('settings: managers only, validated, and used for Skip', async function () 
     assert.strictEqual((await rpc(ctx.plugin, 'alice', 'saveSettings', { skipGraceSeconds: 300 })).ok, false);
     assert.strictEqual((await rpc(ctx.plugin, 'admin', 'saveSettings', { skipGraceSeconds: 5, defaultOfflineWindow: 7200 })).ok, false);
     const valid = { skipGraceSeconds: 300, defaultOfflinePolicy: 'window', defaultOfflineWindow: 1800, defaultAnchor: 'actual', historyDays: 30, staleMinutes: 45,
-        queueIntervalSeconds: 30, pageSize: 100, scheduleStepMinutes: 15, indentPs1: 'tab', indentBat: '2', indentBash: '4' };
-    for (const bad of [{ historyDays: 0 }, { staleMinutes: 2 }, { staleMinutes: 'x' }, { queueIntervalSeconds: 5 }, { pageSize: 500 }, { scheduleStepMinutes: 7 }, { indentBash: '3' }]) assert.strictEqual((await rpc(ctx.plugin, 'admin', 'saveSettings', Object.assign({}, valid, bad))).ok, false, JSON.stringify(bad));
+        queueIntervalSeconds: 30, pageSize: 100, scheduleStepMinutes: 15, indentPs1: 'tab', indentBat: '2', indentBash: '4', maxRunMinutes: 0 };
+    for (const bad of [{ maxRunMinutes: -1 }, { maxRunMinutes: 20000 }, { historyDays: 0 }, { staleMinutes: 2 }, { staleMinutes: 'x' }, { queueIntervalSeconds: 5 }, { pageSize: 500 }, { scheduleStepMinutes: 7 }, { indentBash: '3' }]) assert.strictEqual((await rpc(ctx.plugin, 'admin', 'saveSettings', Object.assign({}, valid, bad))).ok, false, JSON.stringify(bad));
     const saved = await rpc(ctx.plugin, 'admin', 'saveSettings', valid);
     assert.deepStrictEqual(saved.data, valid);
     assert.strictEqual(ctx.plugin.timerSeconds, 30, 'the queue check uses the new interval');
@@ -678,6 +678,7 @@ test('a run is sent once; after the agent restarts, runs it no longer has are re
     await p.queueRun(); await wait(150);
     const triggers = sent.filter(m => m.pluginaction == 'triggerJob');
     assert.strictEqual(triggers.length, 1, 'sent exactly once');
+    assert.strictEqual(triggers[0].maxRunSeconds, 7200, 'with the maximum run time (default 120 minutes)');
     const jobId = triggers[0].jobId;
 
     // The device reboots: its agent reconnects and is asked about the runs it was sent

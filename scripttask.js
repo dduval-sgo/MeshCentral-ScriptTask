@@ -191,6 +191,7 @@ module.exports.scripttask = function (parent) {
                         //console.log('RV IS', replaceVars);
                     }
                     var dispatchTime = Math.floor(new Date() / 1000);
+                    var settings = await obj.getSettings();
                     var jObj = {
                         action: 'plugin',
                         plugin: 'scripttask',
@@ -199,7 +200,8 @@ module.exports.scripttask = function (parent) {
                         scriptId: job.scriptId,
                         replaceVars: replaceVars,
                         scriptHash: script.contentHash,
-                        dispatchTime: dispatchTime
+                        dispatchTime: dispatchTime,
+                        maxRunSeconds: (settings.maxRunMinutes || 0) * 60 // The agent stops the script after this long; 0 means no limit
                     };
                     // Recorded as sent before sending: it is never sent again (see checkSentJobs)
                     var agent = obj.meshServer.webserver.wsagents[job.node];
@@ -271,7 +273,7 @@ module.exports.scripttask = function (parent) {
 
     obj.Schedule = require(__dirname + '/schedule.js');
     obj.SETTINGS_DEFAULTS = { skipGraceSeconds: 120, defaultOfflinePolicy: 'wait', defaultOfflineWindow: 7200, defaultAnchor: 'slot', historyDays: 90, staleMinutes: 30,
-        queueIntervalSeconds: 60, pageSize: 50, scheduleStepMinutes: 5, indentPs1: '4', indentBat: '4', indentBash: '2' };
+        queueIntervalSeconds: 60, pageSize: 50, scheduleStepMinutes: 5, indentPs1: '4', indentBat: '4', indentBash: '2', maxRunMinutes: 120 };
     var SCHEDULE_STEPS = [1, 5, 10, 15, 30, 60], INDENTS = ['2', '4', 'tab'];
     obj.settingsCache = null;
     obj.getSettings = function() {
@@ -854,13 +856,15 @@ module.exports.scripttask = function (parent) {
             queueIntervalSeconds: Math.floor(Number(args.queueIntervalSeconds)),
             pageSize: Math.floor(Number(args.pageSize)),
             scheduleStepMinutes: Number(args.scheduleStepMinutes),
-            indentPs1: String(args.indentPs1), indentBat: String(args.indentBat), indentBash: String(args.indentBash)
+            indentPs1: String(args.indentPs1), indentBat: String(args.indentBat), indentBash: String(args.indentBash),
+            maxRunMinutes: Math.floor(Number(args.maxRunMinutes))
         };
         if (!(s.skipGraceSeconds >= 60 && s.skipGraceSeconds <= 3600)) throw new RpcError('The Skip grace period must be between 1 and 60 minutes.');
         if (!(s.historyDays >= 1 && s.historyDays <= 3650)) throw new RpcError('Keep history for between 1 and 3650 days.');
         if (!(s.staleMinutes >= 5 && s.staleMinutes <= 1440)) throw new RpcError('The "No result yet" time must be between 5 minutes and 24 hours.');
         if (!(s.queueIntervalSeconds >= 15 && s.queueIntervalSeconds <= 600)) throw new RpcError('The queue check interval must be between 15 seconds and 10 minutes.');
         if (!(s.pageSize >= 10 && s.pageSize <= 200)) throw new RpcError('Rows per page must be between 10 and 200.');
+        if (!(s.maxRunMinutes >= 0 && s.maxRunMinutes <= 10080)) throw new RpcError('The maximum run time must be between 1 minute and 7 days, or 0 for no limit.');
         if (SCHEDULE_STEPS.indexOf(s.scheduleStepMinutes) < 0) throw new RpcError('Invalid schedule time step.');
         if ([s.indentPs1, s.indentBat, s.indentBash].some(function(v) { return INDENTS.indexOf(v) < 0; })) throw new RpcError('Invalid indentation.');
         if (!(s.defaultOfflineWindow >= 60 && s.defaultOfflineWindow <= 30 * 86400)) throw new RpcError('The default window must be between 1 minute and 30 days.');

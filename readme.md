@@ -111,6 +111,7 @@ Values are filled in when the run is sent to the device, so the latest script an
 |---|---|
 | Skip grace period: how late a "Skip" schedule may still run | 2 minutes |
 | How often the queue checks for due runs | 60 seconds |
+| Stop scripts that run longer than (the device stops the script and anything it started; 0 for no limit) | 120 minutes |
 | When a run sent to a device is flagged "No result yet" | 30 minutes |
 | How long finished runs are kept | 90 days |
 | Rows per page on the ScriptTask page | 50 |

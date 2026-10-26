@@ -26,11 +26,13 @@ const fs = {};
     fs[fn] = (p, ...rest) => realFs[fn](inBox(p), ...rest);
 });
 
-// A fake shell: collects the lines written to it, and on "exit" runs "./x.sh > y.txt" by copying the script's
-// "echo" text into the output file. A script containing "hang" never exits.
+// A fake shell: collects the lines written to it, and on "exit" runs "./x.sh > y.txt < /dev/null" by copying the
+// script's "echo" text into the output file. A script containing "hang" writes its echo text but never exits, until
+// another shell runs "kill_tree <its pid>".
 const shells = [];
 function fakeExecFile(file, args) {
     const listeners = { exit: [] };
+    const exit = (code) => listeners.exit.forEach((cb) => cb(code, null));
     const child = {
         pid: 1000 + shells.length, file, args, lines: [],
         stdin: {
@@ -48,16 +50,19 @@ function fakeExecFile(file, args) {
         for (const line of child.lines) {
             const cd = /^cd '(.*)'$/.exec(line);
             if (cd) cwd = cd[1].split("'\\''").join("'");
-            const m = /^\.\/(\S+) > (\S+)$/.exec(line);
+            const kill = /kill_tree (\d+)$/.exec(line);
+            if (kill) { const target = shells.find((s) => s.pid == Number(kill[1])); if (target) { target.killed = true; target.exit(137); } }
+            const m = /^\.\/(\S+) > (\S+) < \/dev\/null$/.exec(line);
             if (m) {
                 const script = fs.readFileSync(path.posix.join(cwd, m[1]), 'utf8');
-                if (/hang/.test(script)) return; // Still running
                 const echo = /echo (.*)/.exec(script);
                 fs.writeFileSync(path.posix.join(cwd, m[2]), echo ? echo[1] + '\n' : '');
+                if (/hang/.test(script)) return; // Still running
             }
         }
-        listeners.exit.forEach((cb) => cb(0, null));
+        exit(0);
     }
+    child.exit = exit;
     shells.push(child);
     return child;
 }
@@ -148,4 +153,28 @@ test('checkJobs reports the runs this agent isn\'t running, and finishing one ru
     const before = shells.length;
     call({ pluginaction: 'triggerJob', jobId: 'long', scriptId: 's3', scriptHash: 'h3', dispatchTime: 1 });
     assert.strictEqual(shells.length, before);
+});
+
+test('a run past its maximum run time is stopped, with its output so far, and the limit is optional', async function () {
+    cache['pluginScriptTask_script_s6'] = JSON.stringify({ _id: 's6', contentHash: 'h6', filetype: 'bash', content: 'echo halfway; hang' });
+    sent.length = 0;
+    call({ pluginaction: 'triggerJob', jobId: 'slow', scriptId: 's6', scriptHash: 'h6', dispatchTime: 1, maxRunSeconds: 600 });
+    await wait();
+    const runShell = shells[shells.length - 1];
+    assert.ok(runShell.lines.some((l) => / < \/dev\/null$/.test(l)), 'the script reads no input');
+    test.mock.timers.tick(599 * 1000); await wait();
+    assert.strictEqual(lastSent('jobComplete'), undefined, 'still running before the limit');
+    test.mock.timers.tick(1000); await wait(); await wait();
+    assert.ok(runShell.killed, 'the shell running the script was stopped');
+    assert.ok(shells.some((s) => s.lines.some((l) => l.endsWith('kill_tree ' + runShell.pid))), 'stopped with its child processes');
+    const done = lastSent('jobComplete');
+    assert.strictEqual(done.retVal, null);
+    assert.match(done.errVal, /^Stopped after 10 minutes/);
+    assert.match(done.errVal, /Output so far:\nhalfway/);
+    // No limit: nothing stops it
+    call({ pluginaction: 'triggerJob', jobId: 'unlimited', scriptId: 's6', scriptHash: 'h6', dispatchTime: 1, maxRunSeconds: 0 });
+    await wait();
+    const free = shells[shells.length - 1];
+    test.mock.timers.tick(7 * 86400 * 1000); await wait();
+    assert.ok(!free.killed);
 });

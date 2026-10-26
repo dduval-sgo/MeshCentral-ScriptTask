@@ -6,6 +6,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 ## [Known Issues]
 - None. Please feel free to submit an issue via [GitHub](https://github.com/dduval-sgo/MeshCentral-ScriptTask/issues) if you find anything.
 
+## [Unreleased]
+### Added
+- Maximum run time: a setting (default 120 minutes; 0 for no limit) after which the device stops a script, and any programs it started, and records the run as an error with the output so far. Sent with each run, so it applies to runs sent after it changes. ([#5](https://github.com/dduval-sgo/MeshCentral-ScriptTask/issues/5))
+
+### Fixed
+- Batch and Bash scripts that asked for input (`pause`, `set /p`, a Y/N prompt, `read`) could hang forever, because the prompt read the agent's own commands. Scripts now get no input (`NUL` on Windows, `/dev/null` elsewhere), so a prompt continues straight away. ([#6](https://github.com/dduval-sgo/MeshCentral-ScriptTask/issues/6))
+
 ## [0.1.1] - 2026-10-26
 ### Fixed
 - Runs are sent to their device once. Before, a run that had been sent but hadn't reported back was sent again at every queue check and every reconnect, so a script that rebooted the device looped, and interrupted scripts ran twice. When a device's agent reconnects, ScriptTask now asks it which of its runs are still going; the others are recorded as **Interrupted** (an error, with Run again) and aren't rerun. If the result arrives later after all, it replaces "Interrupted". ([#2](https://github.com/dduval-sgo/MeshCentral-ScriptTask/issues/2))
