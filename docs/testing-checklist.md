@@ -27,6 +27,8 @@ On a device's **Plugins** tab, ScriptTask section:
 - [ ] **Linux, PowerShell** (only if `pwsh` is installed): runs; without `pwsh`, the picker warns first.
 - [ ] **JSON output:** a script that prints JSON shows formatted in the output viewer.
 - [ ] **Error:** a script that writes to stderr or exits with an error shows as Error, with the message.
+- [ ] **Maximum run time:** set "Stop scripts that run longer than" to 1 minute, then run a script that starts a long command (Windows: `ping -n 300 127.0.0.1`; Linux: `sleep 300`). After about a minute the run shows Error "Stopped after 60 seconds…", and the command is no longer running on the device (Task Manager or `ps`). Set it back afterwards.
+- [ ] **Prompts don't hang:** a Batch script with `pause` and `set /p x=Name?`, and a Bash script with `read x`, finish straight away instead of hanging.
 - [ ] **Long-running script** (e.g. `sleep 120`): shows Running, then completes. With "Flag runs with no result after" set to 5 minutes, a script that hangs longer shows "No result yet".
 - [ ] **Reboot script** (e.g. `shutdown /r /t 5` or `sleep 5; reboot`): the device restarts once. When its agent reconnects, the run shows as Error ("Interrupted…") and does not run again.
 - [ ] **Work folder:** while a long script runs, `scripttask` next to the agent holds `st….ps1/.bat/.sh` and `.txt` files. A non-admin user on the device can't open the folder (Windows: Access denied; Linux: permission denied). After the run, the folder is empty.
@@ -77,4 +79,4 @@ Grant the manager account **Manage ScriptTask** using MeshCentral's plugin permi
 
 ## 8. MongoDB (only if you use it)
 
-- [ ] Repeat sections 2, 4 and 5 on a MeshCentral server that uses MongoDB. The automated server tests pass on MongoDB 7 with the driver MeshCentral installs (4.17.2), but a real server hasn't been tried.
+- [ ] Repeat sections 2, 4 and 5 on a MeshCentral server that uses MongoDB. The automated server tests pass on MongoDB 7 with the driver MeshCentral installs (4.17.2), and the official MeshCentral 1.3.1 Docker image on MongoDB 7 loads the plugin, stores its data in MongoDB and creates all its indexes. Runs on real agents against MongoDB haven't been tried.

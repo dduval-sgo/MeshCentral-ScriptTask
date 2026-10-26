@@ -2,7 +2,8 @@
 * @description MeshCentral ScriptTask plugin
 * @author Ryan Blenis
 * @author Desmond Duval (modifications)
-* Modified by Desmond Duval, 2026: private work folder with cleanup, running-job tracking, checkJobs. See changelog.md.
+* Modified by Desmond Duval, 2026: private work folder with cleanup, running-job tracking, checkJobs, maximum run time,
+* scripts' input from NUL or /dev/null. See changelog.md.
 * @copyright 
 * @license Apache-2.0
 */
@@ -32,6 +33,35 @@ function removeRunningJob(jobId) {
     var i = runningJobs.indexOf(jobId);
     if (i >= 0) runningJobs.splice(i, 1);
     delete runningJobPIDs[jobId];
+}
+
+// ---- Maximum run time ----
+// A run that goes past the server's limit is stopped along with the programs it started, and reported as an error.
+var runTimers = {}, timedOut = {};
+function startRunTimer(jObj, pid) {
+    var seconds = Number(jObj.maxRunSeconds);
+    if (!(seconds > 0)) return;
+    runTimers[jObj.jobId] = setTimeout(function () {
+        delete runTimers[jObj.jobId];
+        timedOut[jObj.jobId] = seconds;
+        dbg('Run ' + jObj.jobId + ' passed its maximum run time; stopping process ' + pid);
+        killTree(pid);
+    }, seconds * 1000);
+}
+function killTree(pid) {
+    pid = Number(pid);
+    if (!(pid > 0)) return;
+    if (process.platform == 'win32') {
+        shellCommands(['taskkill /PID ' + pid + ' /T /F'], function () { });
+    } else {
+        // Children first (found with pgrep), then the process itself
+        shellCommands(['kill_tree() { for c in $(pgrep -P "$1"); do kill_tree "$c"; done; kill -9 "$1" 2>/dev/null; }; kill_tree ' + pid], function () { });
+    }
+}
+function describeTimeout(seconds, partial) {
+    var mins = Math.round(seconds / 60);
+    var msg = 'Stopped after ' + (seconds < 120 ? seconds + ' seconds' : mins + ' minutes') + ': the maximum run time set in ScriptTask settings.';
+    return (partial != null && String(partial).trim() != '') ? msg + '\n\nOutput so far:\n' + String(partial).trim() : msg;
 }
 
 // ---- Work folder ----
@@ -138,7 +168,8 @@ function consoleaction(args, rights, sessionid, parent) {
                 scriptId: args.scriptId,
                 replaceVars: args.replaceVars,
                 scriptHash: args.scriptHash,
-                dispatchTime: args.dispatchTime
+                dispatchTime: args.dispatchTime,
+                maxRunSeconds: args.maxRunSeconds // 0 or missing: no limit
             };
             //dbg('jObj args is ' + JSON.stringify(jObj));
             var sObj = getScriptFromCache(jObj.scriptId);
@@ -221,6 +252,12 @@ function consoleaction(args, rights, sessionid, parent) {
 
 function finalizeJob(job, retVal, errVal) {
     if (errVal != null && errVal.stack != null) errVal = errVal.stack;
+    if (runTimers[job.jobId] != null) { clearTimeout(runTimers[job.jobId]); delete runTimers[job.jobId]; }
+    if (timedOut[job.jobId] != null) {
+        errVal = describeTimeout(timedOut[job.jobId], (retVal != null && retVal != 'Success' && retVal != 'Failure') ? retVal : null);
+        retVal = null;
+        delete timedOut[job.jobId];
+    }
     removeRunningJob(job.jobId);
     mesh.SendCommand({ 
         "action": "plugin", 
@@ -251,6 +288,7 @@ function runPowerShell(sObj, jObj, dir) {
         child.stderr.on('data', function (chunk) { errstr += chunk; });
         child.stdout.on('data', function (chunk) { });
         runningJobPIDs[jObj.jobId] = child.pid;
+        startRunTimer(jObj, child.pid);
         var quote = function (p) { return "'" + p.split("'").join("''") + "'"; };
         child.stdin.write('Set-Location -LiteralPath ' + quote(dir) + '\r\n');
         child.stdin.write('& ' + quote(pName) + ' | Out-File -LiteralPath ' + quote(oName) + ' -Encoding UTF8\r\n');
@@ -328,10 +366,11 @@ function runPowerShellNonWin(sObj, jObj, dir) {
         child.stderr.on('data', function (chunk) { errstr += chunk; });
         child.stdout.on('data', function (chunk) { });
         runningJobPIDs[jObj.jobId] = child.pid;
+        startRunTimer(jObj, child.pid);
         
         child.stdin.write("cd '" + dir.split("'").join("'\\''") + "'\n");
         child.stdin.write('chmod 700 ' + pName + '\n');                                                                                                                                        
-        child.stdin.write('./' + pName + ' > ' + oName + '\n');
+        child.stdin.write('./' + pName + ' > ' + oName + ' < /dev/null\n'); // A prompt in the script gets no input instead of reading our "exit"
         child.on('exit', function(procRetVal, procRetSignal) {
             if (errstr != '') {
                 finalizeJob(jObj, null, errstr);
@@ -388,8 +427,9 @@ function runBat(sObj, jObj, dir) {
         child.stderr.on('data', function (chunk) { errstr += chunk; });
         child.stdout.on('data', function (chunk) { });
         runningJobPIDs[jObj.jobId] = child.pid;
+        startRunTimer(jObj, child.pid);
         child.stdin.write('cd /d "' + dir + '"\r\n');
-        child.stdin.write('"' + pName + '" > "' + oName + '"\r\n');
+        child.stdin.write('"' + pName + '" > "' + oName + '" < NUL\r\n'); // A prompt (pause, set /p, Y/N) gets no input instead of hanging
         child.stdin.write('exit\r\n');
 
         child.on('exit', function(procRetVal, procRetSignal) {
@@ -451,9 +491,10 @@ function runBash(sObj, jObj, dir) {
         child.stderr.on('data', function (chunk) { errstr += chunk; });
         child.stdout.on('data', function (chunk) { });
         runningJobPIDs[jObj.jobId] = child.pid;
+        startRunTimer(jObj, child.pid);
         child.stdin.write("cd '" + dir.split("'").join("'\\''") + "'\n");
         child.stdin.write('chmod 700 ' + pName + '\n');
-        child.stdin.write('./' + pName + ' > ' + oName + '\n');
+        child.stdin.write('./' + pName + ' > ' + oName + ' < /dev/null\n'); // A prompt in the script gets no input instead of reading our "exit"
         child.stdin.write('exit\n');
         
         child.on('exit', function(procRetVal, procRetSignal) {

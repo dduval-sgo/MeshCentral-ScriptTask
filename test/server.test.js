@@ -46,13 +46,13 @@ test.after(function () {
 });
 
 // pluginDir: load the plugin from a copy of its files instead of this checkout
-function createPlugin(pluginDir) {
+function createPlugin(pluginDir, args) {
     const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'scripttask-test-'));
     const events = [];
     const meshServer = {
         debug: function () { },
         // Each test gets its own MongoDB database when MONGODB_URL is set
-        args: process.env.MONGODB_URL ? { mongodb: process.env.MONGODB_URL, mongodbname: 'scripttask_test_' + path.basename(dataDir).replace(/\W/g, '') } : {},
+        args: args ? args : process.env.MONGODB_URL ? { mongodb: process.env.MONGODB_URL, mongodbname: 'scripttask_test_' + path.basename(dataDir).replace(/\W/g, '') } : {},
         parentpath: process.env.MESHCENTRAL_PARENT || path.join(__dirname, '..'),
         getConfigFilePath: function (f) { return path.join(dataDir, f); },
         webserver: {
@@ -334,8 +334,8 @@ test('settings: managers only, validated, and used for Skip', async function () 
     assert.strictEqual((await rpc(ctx.plugin, 'alice', 'saveSettings', { skipGraceSeconds: 300 })).ok, false);
     assert.strictEqual((await rpc(ctx.plugin, 'admin', 'saveSettings', { skipGraceSeconds: 5, defaultOfflineWindow: 7200 })).ok, false);
     const valid = { skipGraceSeconds: 300, defaultOfflinePolicy: 'window', defaultOfflineWindow: 1800, defaultAnchor: 'actual', historyDays: 30, staleMinutes: 45,
-        queueIntervalSeconds: 30, pageSize: 100, scheduleStepMinutes: 15, indentPs1: 'tab', indentBat: '2', indentBash: '4' };
-    for (const bad of [{ historyDays: 0 }, { staleMinutes: 2 }, { staleMinutes: 'x' }, { queueIntervalSeconds: 5 }, { pageSize: 500 }, { scheduleStepMinutes: 7 }, { indentBash: '3' }]) assert.strictEqual((await rpc(ctx.plugin, 'admin', 'saveSettings', Object.assign({}, valid, bad))).ok, false, JSON.stringify(bad));
+        queueIntervalSeconds: 30, pageSize: 100, scheduleStepMinutes: 15, indentPs1: 'tab', indentBat: '2', indentBash: '4', maxRunMinutes: 0 };
+    for (const bad of [{ maxRunMinutes: -1 }, { maxRunMinutes: 20000 }, { historyDays: 0 }, { staleMinutes: 2 }, { staleMinutes: 'x' }, { queueIntervalSeconds: 5 }, { pageSize: 500 }, { scheduleStepMinutes: 7 }, { indentBash: '3' }]) assert.strictEqual((await rpc(ctx.plugin, 'admin', 'saveSettings', Object.assign({}, valid, bad))).ok, false, JSON.stringify(bad));
     const saved = await rpc(ctx.plugin, 'admin', 'saveSettings', valid);
     assert.deepStrictEqual(saved.data, valid);
     assert.strictEqual(ctx.plugin.timerSeconds, 30, 'the queue check uses the new interval');
@@ -678,6 +678,7 @@ test('a run is sent once; after the agent restarts, runs it no longer has are re
     await p.queueRun(); await wait(150);
     const triggers = sent.filter(m => m.pluginaction == 'triggerJob');
     assert.strictEqual(triggers.length, 1, 'sent exactly once');
+    assert.strictEqual(triggers[0].maxRunSeconds, 7200, 'with the maximum run time (default 120 minutes)');
     const jobId = triggers[0].jobId;
 
     // The device reboots: its agent reconnects and is asked about the runs it was sent
@@ -752,4 +753,15 @@ test('devices with jobs are tracked in memory, including ones added since the la
     await rpc(p, 'admin', 'addSchedule', { scriptId: sid, nodeIds: [WIN], schedule: { recur: 'daily', interval: 1, startAt: nowS() + 600 } });
     assert.deepStrictEqual((await p.db.getNodeIdsInUse()).sort(), [LIN, WIN].sort(), 'added without waiting for a reload');
     assert.strictEqual((await rpc(p, 'admin', 'history', { filters: { nodeIds: [WIN] } })).ok, true, 'a single-device history query works');
+});
+
+test('without a loadable MongoDB driver, the plugin logs why and MeshCentral keeps running', { skip: !!process.env.MONGODB_URL }, async function () {
+    const logged = [], log = console.log;
+    console.log = function (m) { logged.push(String(m)); };
+    let ctx;
+    try { ctx = createPlugin(null, { mongodb: 'mongodb://127.0.0.1:1' }); } finally { console.log = log; }
+    assert.ok(logged.some(m => /MongoDB driver .* could not be loaded/.test(m)), logged.join('\n'));
+    await ctx.plugin.queueRun(); // no unhandled rejection
+    const r = await rpc(ctx.plugin, 'admin', 'tree');
+    assert.strictEqual(r.ok, false, 'requests fail with an error instead of crashing');
 });
