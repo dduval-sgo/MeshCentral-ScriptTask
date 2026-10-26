@@ -119,6 +119,8 @@ Values are filled in when the run is sent to the device, so the latest script an
 
 Due runs start as soon as a device connects, whatever the queue interval.
 
+**Large histories:** with NeDB (MeshCentral's default database), History searches every finished run, so its pages slow down as history grows: about 0.7 s per page with 100,000 runs. MongoDB uses indexes and stays around 0.1 s. Keeping history for fewer days also helps.
+
 ## Screenshots
 
 | | |

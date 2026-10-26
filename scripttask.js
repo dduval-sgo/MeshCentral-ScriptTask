@@ -687,6 +687,14 @@ module.exports.scripttask = function (parent) {
         if (typeof f.batchId == 'string' && f.batchId) out.batchId = f.batchId.substring(0, 64);
         return out;
     }
+    // A query for finished jobs on these devices. completeTime is a top-level range and the device list sits inside
+    // $and, so NeDB (one index per query, top-level fields only) narrows by time; MongoDB uses its compound indexes.
+    // A single device is a plain top-level match, which NeDB's node index handles best.
+    function jobQuery(nodeIds, completeTime) {
+        var find = { completeTime: completeTime, $and: [] };
+        if (nodeIds.length == 1) find.node = nodeIds[0]; else find.$and.push({ node: { $in: nodeIds } });
+        return find;
+    }
     function escapeRegex(s) { return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); }
     // The devices a query may cover: the requested ones that this user can see
     function nodeScope(filters, visible) {
@@ -750,14 +758,14 @@ module.exports.scripttask = function (parent) {
         obj.requireManage(session);
         var filters = cleanFilters(args.filters), p = page(args);
         var visible = await obj.visibleNodes(session);
-        var and = [ { completeTime: { $ne: null } }, { node: { $in: nodeScope(filters, visible) } } ];
-        if (filters.scriptId) and.push({ scriptId: filters.scriptId });
-        if (filters.batchId) and.push({ batchId: filters.batchId });
+        var find = jobQuery(nodeScope(filters, visible), { $gt: 0 }), and = find.$and;
+        if (filters.from) find.completeTime.$gte = filters.from;
+        if (filters.to) find.completeTime.$lte = filters.to;
+        if (filters.scriptId) find.scriptId = filters.scriptId;
+        if (filters.batchId) find.batchId = filters.batchId;
         if (filters.runBy) and.push({ runBy: { $regex: new RegExp(escapeRegex(filters.runBy), 'i') } });
         if (filters.source == 'manual') and.push({ jobSchedule: null });
         if (filters.source == 'schedule') and.push({ jobSchedule: { $ne: null } });
-        if (filters.from) and.push({ completeTime: { $gte: filters.from } });
-        if (filters.to) and.push({ completeTime: { $lte: filters.to } });
         switch (filters.status) {
             case 'missed': and.push({ missed: true }); break;
             case 'cancelled': and.push({ cancelled: true }); break;
@@ -765,7 +773,7 @@ module.exports.scripttask = function (parent) {
             case 'complete': and.push({ returnVal: { $ne: null } }, { cancelled: { $ne: true } }); break;
         }
         if (filters.q) { var re = new RegExp(escapeRegex(filters.q), 'i'); and.push({ $or: [ { returnVal: { $regex: re } }, { errorVal: { $regex: re } } ] }); }
-        var find = { $and: and };
+        if (and.length == 0) delete find.$and; // MongoDB rejects an empty $and
         var results = await Promise.all([ obj.db.countJobs(find), obj.db.findJobs(find, { completeTime: -1 }, p.skip, p.limit) ]);
         // Lists carry the start of the output only; the full output comes from obj.rpc.job
         var jobs = results[1].map(function(j) {
@@ -1193,13 +1201,14 @@ module.exports.scripttask = function (parent) {
         var queue = (await obj.db.getAllIncompleteJobs()).filter(function(j) { return visible.has(j.node); });
         var counts = { queued: 0, waiting: 0, scheduled: 0, dispatched: 0, stale: 0, missed: 0 };
         queue.forEach(function(j) { j.state = queueStatus(j, now); counts[j.state]++; });
-        var recent = { $and: [ { node: { $in: nodes } }, { completeTime: { $gte: since } } ] };
-        var failed = { $and: recent.$and.concat([ { errorVal: { $ne: null } }, { returnVal: null }, { missed: { $ne: true } }, { cancelled: { $ne: true } } ]) };
-        var missed = { $and: recent.$and.concat([ { missed: true } ]) };
-        var completed = { $and: recent.$and.concat([ { returnVal: { $ne: null } }, { cancelled: { $ne: true } } ]) };
+        // The last 24 hours, narrowed by completeTime first
+        var recent = function(extra) { var q = jobQuery(nodes, { $gte: since }); q.$and = q.$and.concat(extra); return q; };
+        var isFailed = [ { errorVal: { $ne: null } }, { returnVal: null }, { missed: { $ne: true } }, { cancelled: { $ne: true } } ];
+        var failed = recent(isFailed), missed = recent([ { missed: true } ]);
+        var completed = recent([ { returnVal: { $ne: null } }, { cancelled: { $ne: true } } ]);
         var r = await Promise.all([
             obj.db.countJobs(failed), obj.db.countJobs(missed), obj.db.countJobs(completed),
-            obj.db.findJobs({ $or: [ failed, missed ] }, { completeTime: -1 }, 0, 8),
+            obj.db.findJobs(recent([ { $or: [ { $and: isFailed }, { missed: true } ] } ]), { completeTime: -1 }, 0, 8),
             obj.db.getAllSchedules()
         ]);
         var schedules = r[4].filter(function(s) { return visible.has(s.node); });

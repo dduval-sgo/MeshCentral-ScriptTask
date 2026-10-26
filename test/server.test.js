@@ -735,3 +735,21 @@ test('variables: more specific values win, and built-ins are the least specific'
     assert.deepStrictEqual(vars, { site: 'group', 'GBL:runBy': 'service account', 'GBL:nodeId': 'lin-override', 'GBL:meshId': MESH });
     delete p.meshServer.webserver.wsagents[LIN];
 });
+
+test('a new MongoDB database gets every index (only runs against MongoDB)', { skip: !process.env.MONGODB_URL }, async function () {
+    const ctx = createPlugin(); await ready(ctx);
+    await wait(500);
+    const names = (await ctx.plugin.db.scriptFile.indexes()).map(i => i.name).sort();
+    for (const n of ['Batch1', 'JobNode1', 'JobScriptID1', 'JobTime1', 'ScriptName1', 'ScriptPath1', 'TypeComplete1', 'TypeCreated1', 'TypeNodeComplete1', 'TypeScriptComplete1']) assert.ok(names.includes(n), n + ' in ' + names.join(', '));
+});
+
+test('devices with jobs are tracked in memory, including ones added since the last load', async function () {
+    const ctx = createPlugin(); await ready(ctx);
+    const p = ctx.plugin;
+    const sid = (await rpc(p, 'admin', 'addScript', { name: 'Up', filetype: 'bash', content: 'uptime' })).data.id;
+    await rpc(p, 'admin', 'runScript', { scriptId: sid, nodeIds: [LIN] });
+    assert.deepStrictEqual(await p.db.getNodeIdsInUse(), [LIN]);
+    await rpc(p, 'admin', 'addSchedule', { scriptId: sid, nodeIds: [WIN], schedule: { recur: 'daily', interval: 1, startAt: nowS() + 600 } });
+    assert.deepStrictEqual((await p.db.getNodeIdsInUse()).sort(), [LIN, WIN].sort(), 'added without waiting for a reload');
+    assert.strictEqual((await rpc(p, 'admin', 'history', { filters: { nodeIds: [WIN] } })).ok, true, 'a single-device history query works');
+});
