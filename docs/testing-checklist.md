@@ -28,6 +28,10 @@ On a device's **Plugins** tab, ScriptTask section:
 - [ ] **JSON output:** a script that prints JSON shows formatted in the output viewer.
 - [ ] **Error:** a script that writes to stderr or exits with an error shows as Error, with the message.
 - [ ] **Long-running script** (e.g. `sleep 120`): shows Running, then completes. With "Flag runs with no result after" set to 5 minutes, a script that hangs longer shows "No result yet".
+- [ ] **Reboot script** (e.g. `shutdown /r /t 5` or `sleep 5; reboot`): the device restarts once. When its agent reconnects, the run shows as Error ("Interrupted…") and does not run again.
+- [ ] **Work folder:** while a long script runs, `scripttask` next to the agent holds `st….ps1/.bat/.sh` and `.txt` files. A non-admin user on the device can't open the folder (Windows: Access denied; Linux: permission denied). After the run, the folder is empty.
+- [ ] **Leftovers from older versions:** `st*.ps1`/`st*.txt` files in the Mesh Agent folder (Windows) or `/tmp` (Linux) are gone after the agent restarts.
+- [ ] **Running twice:** while a long script runs, restart MeshCentral (not the device). The run keeps going, isn't started again, and reports its result.
 
 ## 3. Variables
 

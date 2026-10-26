@@ -224,7 +224,7 @@ module.exports.CreateDB = function(meshserver) {
               type: 'job', 
               node: { $in: nodeScope },
               completeTime: null,
-              //dispatchTime: null,
+              dispatchTime: null, // A run is sent once; see checkSentJobs for runs whose device restarted
               $and: [
                   { $or: [ { dontQueueUntil: null }, { dontQueueUntil: { $lte: nowTime } } ] },
                   { $or: [ { expiresAt: { $exists: false } }, { expiresAt: null }, { expiresAt: { $gt: nowTime } } ] }

@@ -1,6 +1,8 @@
 /** 
 * @description MeshCentral ScriptTask plugin
 * @author Ryan Blenis
+* @author Desmond Duval (modifications)
+* Modified by Desmond Duval, 2026: private work folder with cleanup, running-job tracking, checkJobs. See changelog.md.
 * @copyright 
 * @license Apache-2.0
 */
@@ -26,11 +28,92 @@ var dbg = function(str) {
     logStream.end('\n');
 }
 
-Array.prototype.remove = function(from, to) {
-  var rest = this.slice((to || from) + 1 || this.length);
-  this.length = from < 0 ? this.length + from : from;
-  return this.push.apply(this, rest);
-};
+function removeRunningJob(jobId) {
+    var i = runningJobs.indexOf(jobId);
+    if (i >= 0) runningJobs.splice(i, 1);
+    delete runningJobPIDs[jobId];
+}
+
+// ---- Work folder ----
+// Scripts (with their variables filled in) and their output are written to a "scripttask" folder next to the agent,
+// readable only by the agent's account and administrators. It is emptied when this module starts, so files from
+// runs that never finished don't pile up. Earlier versions wrote st*.ps1/.bat/.sh/.txt files into the agent's
+// folder or a temp folder; those are removed too.
+
+var LEGACY_FILE = /^st[0-9a-v]{6,16}\.(ps1|bat|sh|txt)$/;
+var LEGACY_DIRS_UNIX = ['/usr/local/mesh', '/tmp', '/usr/local/mesh_services/meshagent', '/var/tmp'];
+var workDir = null, workDirWaiting = null;
+
+function joinPath(dir, name) { return dir + ((process.platform == 'win32') ? '\\' : '/') + name; }
+function agentDir() {
+    try {
+        var p = process.execPath;
+        var i = Math.max(p.lastIndexOf('/'), p.lastIndexOf('\\'));
+        if (i > 0) return p.substring(0, i);
+    } catch (e) { }
+    return null;
+}
+// The folder the earlier versions used, as a fallback
+function legacyDir() {
+    if (process.platform == 'win32') return process.cwd();
+    var fs = require('fs');
+    for (var i = 0; i < LEGACY_DIRS_UNIX.length; i++) { if (fs.existsSync(LEGACY_DIRS_UNIX[i])) return LEGACY_DIRS_UNIX[i]; }
+    return '/tmp';
+}
+// Run commands in a shell (cmd.exe or sh), the way the script runners do, and call done() when it exits
+function shellCommands(lines, done) {
+    try {
+        var child = (process.platform == 'win32')
+            ? require('child_process').execFile(process.env['windir'] + '\\system32\\cmd.exe')
+            : require('child_process').execFile('/bin/sh', ['sh']);
+        child.stderr.on('data', function (chunk) { dbg('Shell: ' + chunk); });
+        child.stdout.on('data', function (chunk) { });
+        child.on('exit', function () { done(); });
+        var eol = (process.platform == 'win32') ? '\r\n' : '\n';
+        lines.forEach(function (l) { child.stdin.write(l + eol); });
+        child.stdin.write('exit' + eol);
+    } catch (e) { dbg('Shell error: ' + e); done(); }
+}
+function emptyFolder(dir, onlyLegacy) {
+    var fs = require('fs');
+    try {
+        fs.readdirSync(dir).forEach(function (name) {
+            if (onlyLegacy && !LEGACY_FILE.test(name)) return;
+            try { fs.unlinkSync(joinPath(dir, name)); } catch (e) { } // A file still in use is left for next time
+        });
+    } catch (e) { dbg('Could not clean ' + dir + ': ' + e); }
+}
+// Calls back with the work folder, creating and locking it down first if needed
+function withWorkDir(callback) {
+    if (workDir != null) { callback(workDir); return; }
+    if (workDirWaiting != null) { workDirWaiting.push(callback); return; }
+    workDirWaiting = [callback];
+    var fs = require('fs');
+    var base = agentDir(), dir = (base != null) ? joinPath(base, 'scripttask') : null;
+    var finish = function (chosen) {
+        workDir = chosen;
+        emptyFolder(workDir, workDir != dir); // Empty our own folder; in a shared fallback folder, only our old files
+        var waiting = workDirWaiting; workDirWaiting = null;
+        waiting.forEach(function (cb) { cb(workDir); });
+    };
+    try { if (dir != null && !fs.existsSync(dir)) fs.mkdirSync(dir); } catch (e) { dbg('Could not create ' + dir + ': ' + e); }
+    if (dir == null || !fs.existsSync(dir)) { finish(legacyDir()); return; }
+    if (process.platform == 'win32') {
+        // Only SYSTEM (S-1-5-18) and Administrators (S-1-5-32-544), whatever the system's language
+        shellCommands(['icacls "' + dir + '" /inheritance:r /grant:r *S-1-5-18:(OI)(CI)F *S-1-5-32-544:(OI)(CI)F'], function () { finish(dir); });
+    } else {
+        shellCommands(["chmod 700 '" + dir.split("'").join("'\\''") + "'"], function () { finish(dir); });
+    }
+}
+// Remove files left by earlier versions, in the folders they used
+function cleanLegacyFiles() {
+    var fs = require('fs');
+    var dirs = (process.platform == 'win32') ? [process.cwd()] : LEGACY_DIRS_UNIX;
+    dirs.forEach(function (d) { if (fs.existsSync(d)) emptyFolder(d, true); });
+}
+setTimeout(function () {
+    try { cleanLegacyFiles(); withWorkDir(function () { }); } catch (e) { dbg('Startup cleanup failed: ' + e); }
+}, 5000);
 
 function consoleaction(args, rights, sessionid, parent) {
     isWsconnection = false;
@@ -80,18 +163,27 @@ function consoleaction(args, rights, sessionid, parent) {
         case 'cacheScript':
             var sObj = args.script;
             cacheScript(sObj);
-            var setRun = [];
-            if (pendingDownload.length) {
-                pendingDownload.forEach(function(pd, k) { 
-                    if (pd.scriptId == sObj._id && pd.scriptHash == sObj.contentHash) {
-                        if (setRun.indexOf(pd) === -1) {
-                            runScript(sObj, pd);
-                            setRun.push(pd);
-                        }
-                        pendingDownload.remove(k);
-                    }
-                });
-            }
+            // Run the jobs that were waiting for this script, and keep the rest waiting
+            var ready = pendingDownload.filter(function (pd) { return pd.scriptId == sObj._id && pd.scriptHash == sObj.contentHash; });
+            pendingDownload = pendingDownload.filter(function (pd) { return ready.indexOf(pd) === -1; });
+            ready.forEach(function (pd) { runScript(JSON.parse(JSON.stringify(sObj)), pd); });
+        break;
+        case 'checkJobs':
+            // The server asks which of the runs it sent are still running here (after the agent reconnects).
+            // Runs this agent doesn't know are reported, so the server records them as interrupted instead of rerunning.
+            var ids = Array.isArray(args.jobIds) ? args.jobIds : [];
+            var notRunning = ids.filter(function (id) {
+                if (runningJobs.indexOf(id) !== -1) return false;
+                return !pendingDownload.some(function (pd) { return pd.jobId == id; });
+            });
+            if (notRunning.length) mesh.SendCommand({
+                "action": "plugin",
+                "plugin": "scripttask",
+                "pluginaction": "jobsNotRunning",
+                "jobIds": notRunning,
+                "sessionid": _sessionid,
+                "tag": "console"
+            });
         break;
         case 'clearAll':
             clearCache();
@@ -129,8 +221,7 @@ function consoleaction(args, rights, sessionid, parent) {
 
 function finalizeJob(job, retVal, errVal) {
     if (errVal != null && errVal.stack != null) errVal = errVal.stack;
-    runningJobs.remove(runningJobs.indexOf(job.jobId));
-    if (typeof runningJobPIDs[job.jobId] != 'undefined') delete runningJobPIDs[job.jobId];
+    removeRunningJob(job.jobId);
     mesh.SendCommand({ 
         "action": "plugin", 
         "plugin": "scripttask",
@@ -145,13 +236,13 @@ function finalizeJob(job, retVal, errVal) {
     });
 }
 //@TODO Test powershell on *nix devices with and without powershell installed
-function runPowerShell(sObj, jObj) {
-    if (process.platform != 'win32') return runPowerShellNonWin(sObj, jObj);
+function runPowerShell(sObj, jObj, dir) {
+    if (process.platform != 'win32') return runPowerShellNonWin(sObj, jObj, dir);
     const fs = require('fs');
     var rand =  Math.random().toString(32).replace('0.', '');
     
-    var oName = 'st' + rand + '.txt';
-    var pName = 'st' + rand + '.ps1';
+    var oName = joinPath(dir, 'st' + rand + '.txt');
+    var pName = joinPath(dir, 'st' + rand + '.ps1');
     var pwshout = '', pwsherr = '', cancontinue = false;
     try {
         fs.writeFileSync(pName, sObj.content);
@@ -160,7 +251,9 @@ function runPowerShell(sObj, jObj) {
         child.stderr.on('data', function (chunk) { errstr += chunk; });
         child.stdout.on('data', function (chunk) { });
         runningJobPIDs[jObj.jobId] = child.pid;
-        child.stdin.write('.\\' + pName + ' | Out-File ' + oName + ' -Encoding UTF8\r\n');
+        var quote = function (p) { return "'" + p.split("'").join("''") + "'"; };
+        child.stdin.write('Set-Location -LiteralPath ' + quote(dir) + '\r\n');
+        child.stdin.write('& ' + quote(pName) + ' | Out-File -LiteralPath ' + quote(oName) + ' -Encoding UTF8\r\n');
         child.on('exit', function(procRetVal, procRetSignal) {
             dbg('Exiting with '+procRetVal + ', Signal: ' + procRetSignal); 
             if (errstr != '') {
@@ -204,22 +297,10 @@ function runPowerShell(sObj, jObj) {
     }
 }
 
-function runPowerShellNonWin(sObj, jObj) {
+function runPowerShellNonWin(sObj, jObj, dir) {
     const fs = require('fs');
     var rand =  Math.random().toString(32).replace('0.', '');
-    
-    var path = '';
-    var pathTests = [
-        '/usr/local/mesh',
-        '/tmp',
-        '/usr/local/mesh_services/meshagent', 
-        '/var/tmp'
-    ];
-    pathTests.forEach(function(p) {
-        if (path == '' && fs.existsSync(p)) { path = p; }
-    });
-    dbg('Path chosen is: ' + path);
-    path = path + '/';
+    var path = dir + '/';
     
     var oName = 'st' + rand + '.txt';
     var pName = 'st' + rand + '.ps1';
@@ -248,8 +329,8 @@ function runPowerShellNonWin(sObj, jObj) {
         child.stdout.on('data', function (chunk) { });
         runningJobPIDs[jObj.jobId] = child.pid;
         
-        child.stdin.write('cd ' + path + '\n');                                                                                                                                                
-        child.stdin.write('chmod a+x ' + pName + '\n');                                                                                                                                        
+        child.stdin.write("cd '" + dir.split("'").join("'\\''") + "'\n");
+        child.stdin.write('chmod 700 ' + pName + '\n');                                                                                                                                        
         child.stdin.write('./' + pName + ' > ' + oName + '\n');
         child.on('exit', function(procRetVal, procRetSignal) {
             if (errstr != '') {
@@ -291,15 +372,15 @@ function runPowerShellNonWin(sObj, jObj) {
     }
 }
 
-function runBat(sObj, jObj) {
+function runBat(sObj, jObj, dir) {
     if (process.platform != 'win32') {
         finalizeJob(jObj, null, 'Platform not supported.');
         return;
     }
     const fs = require('fs');
     var rand =  Math.random().toString(32).replace('0.', '');
-    var oName = 'st' + rand + '.txt';
-    var pName = 'st' + rand + '.bat';
+    var oName = joinPath(dir, 'st' + rand + '.txt');
+    var pName = joinPath(dir, 'st' + rand + '.bat');
     try {
         fs.writeFileSync(pName, sObj.content);
         var outstr = '', errstr = '';
@@ -307,7 +388,8 @@ function runBat(sObj, jObj) {
         child.stderr.on('data', function (chunk) { errstr += chunk; });
         child.stdout.on('data', function (chunk) { });
         runningJobPIDs[jObj.jobId] = child.pid;
-        child.stdin.write(pName + ' > ' + oName + '\r\n');
+        child.stdin.write('cd /d "' + dir + '"\r\n');
+        child.stdin.write('"' + pName + '" > "' + oName + '"\r\n');
         child.stdin.write('exit\r\n');
 
         child.on('exit', function(procRetVal, procRetSignal) {
@@ -349,25 +431,13 @@ function runBat(sObj, jObj) {
     }
 }
 
-function runBash(sObj, jObj) {
+function runBash(sObj, jObj, dir) {
     if (process.platform == 'win32') {
         finalizeJob(jObj, null, 'Platform not supported.');
         return;
     }
-    //dbg('proc is ' + JSON.stringify(process));
     const fs = require('fs');
-    var path = '';
-    var pathTests = [
-        '/usr/local/mesh',
-        '/tmp',
-        '/usr/local/mesh_services/meshagent', 
-        '/var/tmp'
-    ];
-    pathTests.forEach(function(p) {
-        if (path == '' && fs.existsSync(p)) { path = p; }
-    });
-    dbg('Path chosen is: ' + path);
-    path = path + '/';
+    var path = dir + '/';
     //var child = require('child_process');
     //child.execFile(process.env['windir'] + '\\system32\\cmd.exe', ['/c', 'RunDll32.exe user32.dll,LockWorkStation'], { type: 1 });
     
@@ -381,8 +451,8 @@ function runBash(sObj, jObj) {
         child.stderr.on('data', function (chunk) { errstr += chunk; });
         child.stdout.on('data', function (chunk) { });
         runningJobPIDs[jObj.jobId] = child.pid;
-        child.stdin.write('cd ' + path + '\n');
-        child.stdin.write('chmod a+x ' + pName + '\n');
+        child.stdin.write("cd '" + dir.split("'").join("'\\''") + "'\n");
+        child.stdin.write('chmod 700 ' + pName + '\n');
         child.stdin.write('./' + pName + ' > ' + oName + '\n');
         child.stdin.write('exit\n');
         
@@ -437,12 +507,11 @@ function runScript(sObj, jObj) {
             dbg('Got process list');
             dbg('There are currently ' + runningJobs.length + ' running jobs.');
             if (runningJobs.length) {
-                runningJobs.forEach(function (jobId, idx) {
+                runningJobs.slice().forEach(function (jobId) {
                     dbg('Checking for running job: ' + jobId + ' with PID ' + runningJobPIDs[jobId]);
                     if (typeof plist[runningJobPIDs[jobId]] == 'undefined' || typeof plist[runningJobPIDs[jobId]].cmd != 'string') {
                         dbg('Found job with no process. Removing running status.');
-                        delete runningJobPIDs[jobId];
-                        runningJobs.remove(runningJobs.indexOf(idx));
+                        removeRunningJob(jobId);
                         //dbg('RunningJobs: ' + JSON.stringify(runningJobs));
                         //dbg('RunningJobsPIDs: ' + JSON.stringify(runningJobPIDs));
                     }
@@ -461,20 +530,23 @@ function runScript(sObj, jObj) {
     }
     runningJobs.push(jObj.jobId);
     dbg('Running Script '+ sObj._id);
-    switch (sObj.filetype) {
-        case 'ps1':
-            runPowerShell(sObj, jObj);
-        break;
-        case 'bat':
-            runBat(sObj, jObj);
-        break;
-        case 'bash':
-            runBash(sObj, jObj);
-        break;
-        default:
-            dbg('Unknown filetype: '+ sObj.filetype);
-        break;
-    }
+    withWorkDir(function (dir) {
+        switch (sObj.filetype) {
+            case 'ps1':
+                runPowerShell(sObj, jObj, dir);
+            break;
+            case 'bat':
+                runBat(sObj, jObj, dir);
+            break;
+            case 'bash':
+                runBash(sObj, jObj, dir);
+            break;
+            default:
+                dbg('Unknown filetype: '+ sObj.filetype);
+                finalizeJob(jObj, null, 'Unknown script type: ' + sObj.filetype);
+            break;
+        }
+    });
 }
 function getScriptFromCache(id) {
     var script = db.Get('pluginScriptTask_script_' + id);

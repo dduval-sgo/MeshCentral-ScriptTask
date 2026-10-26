@@ -91,6 +91,12 @@ A run only happens while its device is online. Each schedule chooses what happen
 - **If the device is offline:** run when it reconnects, run only if it reconnects within a set time, or skip. Runs that don't happen are recorded as **Missed**. A device that was offline never gets a burst of catch-up runs: only the latest due run is kept.
 - **If a run happens late:** keep the original timetable, or shift the following runs to when it actually ran.
 
+Each run is sent to its device once. If the device or its agent restarts before the script reports back (a script that reboots the device, for example), the run is recorded as **Interrupted** and isn't run again; use Run again if you want it rerun.
+
+## On the device
+
+The agent writes each script, with its variables filled in, and its output to a `scripttask` folder next to the agent program (for example `C:\Program Files\Mesh Agent\scripttask`). Only SYSTEM and Administrators can open it on Windows, and only root elsewhere. The files are deleted when the script finishes, and the folder is emptied whenever the agent starts. Scripts start in that folder, so use full paths for files you want to keep.
+
 ## Variables
 
 Scripts can use variables written as `#name#`. A variable can apply to all devices (global), one script, one device group, or one device. When names match, the most specific value wins: device, then device group, then script, then global. Names with no value anywhere are replaced with `VAR_NOT_FOUND`.

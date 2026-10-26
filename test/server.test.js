@@ -664,3 +664,55 @@ test('a plugin that MeshCentral disabled or removed stops checking the queue', a
     p.resetQueueTimer();
     assert.strictEqual(p.intervalTimer, before, 'no new queue timer once stopped');
 });
+
+test('a run is sent once; after the agent restarts, runs it no longer has are recorded as interrupted, not rerun', async function () {
+    const ctx = createPlugin(); await ready(ctx);
+    const p = ctx.plugin, sent = [];
+    const agent = { dbNodeKey: LIN, dbMeshKey: MESH, send: function (m) { sent.push(JSON.parse(m)); } };
+    p.meshServer.webserver.wsagents[LIN] = agent;
+    const sid = (await rpc(p, 'admin', 'addScript', { name: 'Reboot', filetype: 'bash', content: 'reboot' })).data.id;
+    await rpc(p, 'admin', 'runScript', { scriptId: sid, nodeIds: [LIN] });
+    await wait(150);
+    // Overlapping queue runs, then later ones: still sent once
+    await Promise.all([p.queueRun(), p.queueRun()]); await wait(150);
+    await p.queueRun(); await wait(150);
+    const triggers = sent.filter(m => m.pluginaction == 'triggerJob');
+    assert.strictEqual(triggers.length, 1, 'sent exactly once');
+    const jobId = triggers[0].jobId;
+
+    // The device reboots: its agent reconnects and is asked about the runs it was sent
+    sent.length = 0;
+    p.hook_agentCoreIsStable(agent); await wait(150);
+    const check = sent.find(m => m.pluginaction == 'checkJobs');
+    assert.deepStrictEqual(check.jobIds, [jobId]);
+    agentSends(p, WIN, { pluginaction: 'jobsNotRunning', jobIds: [jobId] }); await wait(150);
+    assert.strictEqual((await p.db.get(jobId))[0].completeTime, null, 'another device can\'t close this run');
+    agentSends(p, LIN, { pluginaction: 'jobsNotRunning', jobIds: [jobId] }); await wait(150);
+    let job = (await p.db.get(jobId))[0];
+    assert.ok(job.interrupted && job.completeTime != null && /Interrupted/.test(job.errorVal));
+    await p.queueRun(); await wait(150);
+    assert.strictEqual(sent.filter(m => m.pluginaction == 'triggerJob').length, 0, 'not rerun');
+
+    // If the result arrives after all, it replaces "Interrupted"
+    agentSends(p, LIN, { pluginaction: 'jobComplete', jobId: jobId, scriptId: sid, retVal: 'done', errVal: null, dispatchTime: job.dispatchTime }); await wait(150);
+    job = (await p.db.get(jobId))[0];
+    assert.deepStrictEqual([job.interrupted, job.returnVal], [false, 'done']);
+    delete p.meshServer.webserver.wsagents[LIN];
+});
+
+test('an interrupted scheduled run closes its slot and the schedule carries on', async function () {
+    const ctx = createPlugin(); await ready(ctx);
+    const p = ctx.plugin, sent = [];
+    const agent = { dbNodeKey: LIN, dbMeshKey: MESH, send: function (m) { sent.push(JSON.parse(m)); } };
+    p.meshServer.webserver.wsagents[LIN] = agent;
+    const r = await scheduleOn(ctx, 'admin', { recur: 'hourly', interval: 1, startAt: nowS() - 30 });
+    await p.queueRun(); await wait(150);
+    const first = sent.find(m => m.pluginaction == 'triggerJob');
+    assert.ok(first);
+    agentSends(p, LIN, { pluginaction: 'jobsNotRunning', jobIds: [first.jobId] }); await wait(200);
+    const jobs = await jobsFor(ctx, r.sid);
+    assert.strictEqual(jobs.length, 2);
+    assert.ok(jobs[0].interrupted);
+    assert.deepStrictEqual([jobs[1].completeTime, jobs[1].slot], [null, r.schedule.startAt + 3600], 'the next hourly run is scheduled');
+    delete p.meshServer.webserver.wsagents[LIN];
+});

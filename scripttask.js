@@ -135,6 +135,8 @@ module.exports.scripttask = function (parent) {
 
     // ---- Queue ----
 
+    obj.sending = new Set(); // Jobs being sent right now, so overlapping queue runs don't send one twice
+
     obj.queueRun = async function() {
         if (!obj.isActive()) return;
         try { await obj.expireJobs(); } catch (e) { console.log('PLUGIN: ScriptTask: Could not expire jobs: ', e); }
@@ -146,6 +148,9 @@ module.exports.scripttask = function (parent) {
             if (jobs.length == 0) return;
             //@TODO check for a large number and use taskLimiter to queue the jobs
             jobs.forEach(job => {
+                var key = String(job._id);
+                if (obj.sending.has(key)) return;
+                obj.sending.add(key);
                 obj.db.get(job.scriptId)
                 .then(async (script) => {
                     script = script[0];
@@ -195,14 +200,16 @@ module.exports.scripttask = function (parent) {
                         scriptHash: script.contentHash,
                         dispatchTime: dispatchTime
                     };
-                    //obj.debug('ScriptTask', 'Sending job to agent');
-                    try {
-                        obj.meshServer.webserver.wsagents[job.node].send(JSON.stringify(jObj));
-                        obj.db.update(job._id, { dispatchTime: dispatchTime })
-                        .then(() => { obj.invalidate({ nodeIds: [job.node] }); });
-                    } catch (e) { }
+                    // Recorded as sent before sending: it is never sent again (see checkSentJobs)
+                    var agent = obj.meshServer.webserver.wsagents[job.node];
+                    if (agent == null) return;
+                    await obj.db.update(job._id, { dispatchTime: dispatchTime });
+                    try { agent.send(JSON.stringify(jObj)); }
+                    catch (e) { await obj.db.update(job._id, { dispatchTime: null }); return; }
+                    obj.invalidate({ nodeIds: [job.node] });
                 })
-                .catch(e => console.log('PLUGIN: ScriptTask: Could not dispatch job.', e));
+                .catch(e => console.log('PLUGIN: ScriptTask: Could not dispatch job.', e))
+                .then(() => { obj.sending.delete(key); });
             });
         })
         .then(() => {
@@ -337,7 +344,33 @@ module.exports.scripttask = function (parent) {
     obj.hook_agentCoreIsStable = function(agent) {
         clearTimeout(obj.connectTimer);
         obj.connectTimer = setTimeout(obj.queueRun, 3000); // One queue run for a burst of reconnecting devices
-        if (agent && typeof agent.dbNodeKey == 'string') obj.invalidate({ nodeIds: [agent.dbNodeKey] });
+        if (agent && typeof agent.dbNodeKey == 'string') {
+            obj.checkSentJobs(agent).catch(function(e) { console.log('PLUGIN: ScriptTask: Could not check sent jobs: ', e); });
+            obj.invalidate({ nodeIds: [agent.dbNodeKey] });
+        }
+    };
+
+    // Runs are sent once and never resent: rerunning after a reboot could repeat a script that rebooted the device.
+    // When a device's agent reconnects, ask it which of the runs it was sent are still running. The agent answers
+    // with jobsNotRunning, and those runs are recorded as interrupted. A result that arrives later still counts.
+    obj.INTERRUPTED = 'Interrupted: the device or its agent restarted before the script reported a result. It was not run again.';
+    obj.checkSentJobs = async function(agent) {
+        if (!obj.isActive() || obj.db == null) return;
+        var sent = (await obj.db.getIncompleteJobsForNode(agent.dbNodeKey)).filter(function(j) { return j.dispatchTime != null; });
+        if (sent.length == 0) return;
+        agent.send(JSON.stringify({ action: 'plugin', plugin: 'scripttask', pluginaction: 'checkJobs', jobIds: sent.map(function(j) { return String(j._id); }) }));
+    };
+    obj.markInterrupted = async function(agent, jobIds) {
+        var now = Math.floor(Date.now() / 1000), changed = false;
+        for (var jobId of (Array.isArray(jobIds) ? jobIds : []).slice(0, 1000)) {
+            var job = (await obj.db.get(String(jobId)))[0];
+            if (job == null || job.type != 'job' || job.node != agent.dbNodeKey || job.completeTime != null || job.dispatchTime == null) continue;
+            await obj.db.update(job._id, { completeTime: now, errorVal: obj.INTERRUPTED, interrupted: true });
+            // A scheduled run closes its slot as usual; the schedule carries on with its next one
+            if (job.jobSchedule != null) { await obj.closeSlot(job.jobSchedule, job); await obj.ensureScheduleJobs(job.jobSchedule); }
+            changed = true;
+        }
+        if (changed) obj.invalidate({ nodeIds: [agent.dbNodeKey] });
     };
 
     // ---- Change notices ----
@@ -1233,9 +1266,10 @@ module.exports.scripttask = function (parent) {
                     if (job == null || job.node != agent.dbNodeKey) return; // Agents may only report their own jobs
                     var update = { completeTime: completeTime, returnVal: retVal, errorVal: errVal, dispatchTime: dispatchTime };
                     if (job.cancelled) { update.completeTime = job.completeTime; update.errorVal = job.errorVal; update.lateReturnVal = retVal; update.lateErrorVal = errVal; delete update.returnVal; }
+                    if (job.interrupted) update.interrupted = false; // It finished after all: its real result replaces "Interrupted"
                     return obj.db.update(jobId, update)
                     .then(() => {
-                        if (job.jobSchedule == null || job.cancelled) return; // A cancelled run's slot was closed when it was cancelled
+                        if (job.jobSchedule == null || job.cancelled || job.interrupted) return; // Its slot was closed when it was cancelled or interrupted
                         return obj.db.get(job.jobSchedule)
                         .then((found) => {
                             if (found.length == 0) return;
@@ -1250,6 +1284,9 @@ module.exports.scripttask = function (parent) {
                     });
                 })
                 .catch(e => { console.log('PLUGIN: ScriptTask: Failed to complete job. ', e); });
+            break;
+            case 'jobsNotRunning':
+                obj.markInterrupted(agent, command.jobIds).catch(function(e) { console.log('PLUGIN: ScriptTask: Could not record interrupted jobs: ', e); });
             break;
             case 'clearAllPendingJobs':
                 obj.db.deletePendingJobsForNode(agent.dbNodeKey)
