@@ -14,7 +14,12 @@
     var host = ST.host;
     var S = ST.shared, store = S.store, nodeName = S.nodeName, meshName = S.meshName;
     var TYPES = [['ps1', 'PowerShell'], ['bat', 'Batch'], ['bash', 'Bash']];
-    var BUILT_INS = { 'GBL:meshId': 'The device\'s group id', 'GBL:nodeId': 'The device\'s id', 'GBL:runBy': 'The user (or schedule owner) who started the run' };
+    var BUILT_INS = {
+        'GBL:nodeName': 'The device\'s name', 'GBL:meshName': 'The device\'s group name', 'GBL:tags': 'The device\'s tags, separated by commas',
+        'GBL:os': 'The device\'s operating system, as MeshCentral reports it', 'GBL:scriptName': 'This script\'s name',
+        'GBL:runTime': 'When the run was sent, in UTC (ISO 8601, e.g. 2026-10-26T14:05:00.000Z)',
+        'GBL:nodeId': 'The device\'s id', 'GBL:meshId': 'The device\'s group id', 'GBL:runBy': 'The user (or schedule owner) who started the run'
+    };
 
     // ---- Routing: #/<section>[/<id>][?filters], e.g. #/library/<scriptId> or #/history?status=error&page=2 ----
 

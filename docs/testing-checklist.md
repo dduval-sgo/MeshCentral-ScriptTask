@@ -28,7 +28,8 @@ On a device's **Plugins** tab, ScriptTask section:
 - [ ] **JSON output:** a script that prints JSON shows formatted in the output viewer.
 - [ ] **Error:** a script that writes to stderr or exits with an error shows as Error, with the message.
 - [ ] **Maximum run time:** set "Stop scripts that run longer than" to 1 minute, then run a script that starts a long command (Windows: `ping -n 300 127.0.0.1`; Linux: `sleep 300`). After about a minute the run shows Error "Stopped after 60 seconds…", and the command is no longer running on the device (Task Manager or `ps`). Set it back afterwards.
-- [ ] **Prompts don't hang:** a Batch script with `pause` and `set /p x=Name?`, and a Bash script with `read x`, finish straight away instead of hanging.
+- [ ] **Prompts don't hang:** a Batch script with `pause` and `set /p x=Name?`, and a Bash script with `read x`, finish straight away instead of hanging. A PowerShell script with `Read-Host 'Name?'` finishes straight away with an error about NonInteractive mode.
+- [ ] **PowerShell still runs normally** with `-NonInteractive`: a script that prints a few lines (and one that writes an object, e.g. `Get-Service | Select -First 3`) shows the same output as before.
 - [ ] **Long-running script** (e.g. `sleep 120`): shows Running, then completes. With "Flag runs with no result after" set to 5 minutes, a script that hangs longer shows "No result yet".
 - [ ] **Reboot script** (e.g. `shutdown /r /t 5` or `sleep 5; reboot`): the device restarts once. When its agent reconnects, the run shows as Error ("Interrupted…") and does not run again.
 - [ ] **Work folder:** while a long script runs, `scripttask` next to the agent holds `st….ps1/.bat/.sh` and `.txt` files. A non-admin user on the device can't open the folder (Windows: Access denied; Linux: permission denied). After the run, the folder is empty.
@@ -40,7 +41,8 @@ On a device's **Plugins** tab, ScriptTask section:
 - [ ] A global variable, a device-group variable and a device variable with the same name: the device value wins on that device, the group value on another device in the group, the global value elsewhere.
 - [ ] A **secret** variable: hidden in Variables and in the editor's hover until Reveal; the script still receives the real value.
 - [ ] A name with no value runs as `VAR_NOT_FOUND`, and the Variables section lists it as undefined.
-- [ ] `#GBL:nodeId#`, `#GBL:meshId#` and `#GBL:runBy#` are filled in.
+- [ ] `#GBL:nodeName#`, `#GBL:meshName#`, `#GBL:tags#`, `#GBL:os#`, `#GBL:scriptName#`, `#GBL:runTime#`, `#GBL:nodeId#`, `#GBL:meshId#` and `#GBL:runBy#` are filled in.
+- [ ] A variable whose value contains `$&` or `#text#` (e.g. a password) reaches the script unchanged.
 
 ## 4. Schedules and offline devices
 

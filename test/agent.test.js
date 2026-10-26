@@ -178,3 +178,11 @@ test('a run past its maximum run time is stopped, with its output so far, and th
     test.mock.timers.tick(7 * 86400 * 1000); await wait();
     assert.ok(!free.killed);
 });
+
+test('variable values are inserted exactly as written', async function () {
+    cache['pluginScriptTask_script_s7'] = JSON.stringify({ _id: 's7', contentHash: 'h7', filetype: 'bash', content: 'echo #pw# #url# #missing# done' });
+    sent.length = 0;
+    call({ pluginaction: 'triggerJob', jobId: 'literal', scriptId: 's7', scriptHash: 'h7', dispatchTime: 1, replaceVars: { pw: 'a$&b$1$$c', url: 'page#top#end' } });
+    await wait(); await wait();
+    assert.strictEqual(lastSent('jobComplete').retVal, 'a$&b$1$$c page#top#end VAR_NOT_FOUND done');
+});

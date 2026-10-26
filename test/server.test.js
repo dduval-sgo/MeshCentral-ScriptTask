@@ -19,6 +19,8 @@ const fs = require('fs');
 
 const LIN = 'node//linux0001', WIN = 'node//windows001', OTHER = 'node//hidden0001';
 const MESH = 'mesh//group0001';
+// What MeshCentral's database says about the test devices
+const DEVICE_INFO = { [LIN]: { name: 'lab-linux-01', tags: ['lab', 'linux'], osdesc: 'Ubuntu 24.04 LTS' } };
 const REMOTECOMMAND = 0x00020000;
 
 // Device rights per user, as MeshCentral's GetNodeWithRights would report them
@@ -57,6 +59,7 @@ function createPlugin(pluginDir, args) {
         getConfigFilePath: function (f) { return path.join(dataDir, f); },
         webserver: {
             wsagents: {},
+            meshes: { [MESH]: { _id: MESH, name: 'Test Lab' } },
             GetNodeWithRights: function (domain, user, nodeId, cb) {
                 const r = (RIGHTS[user._id] || {})[nodeId];
                 if (r == null) { cb(null, 0, false); return; }
@@ -65,7 +68,7 @@ function createPlugin(pluginDir, args) {
             CreateNodeDispatchTargets: function (meshId, nodeId) { return ['*', meshId, nodeId]; },
             IsMeshViewable: function (user, meshId) { return meshId == MESH && user._id != 'user//carol' && Object.keys(RIGHTS[user._id] || {}).length > 0; }
         },
-        db: { Get: function (id, cb) { cb(null, [{ _id: id, meshid: MESH }]); } },
+        db: { Get: function (id, cb) { cb(null, [Object.assign({ _id: id, meshid: MESH, name: id.split('/').pop() }, DEVICE_INFO[id] || {})]); } },
         DispatchEvent: function (targets, source, ev) { events.push({ targets: targets, ev: ev }); },
         pluginHandler: {}
     };
@@ -733,7 +736,7 @@ test('variables: more specific values win, and built-ins are the least specific'
     await rpc(p, 'admin', 'runScript', { scriptId: sid, nodeIds: [LIN] });
     await p.queueRun(); await wait(200);
     const vars = sent.find(m => m.pluginaction == 'triggerJob').replaceVars;
-    assert.deepStrictEqual(vars, { site: 'group', 'GBL:runBy': 'service account', 'GBL:nodeId': 'lin-override', 'GBL:meshId': MESH });
+    assert.deepStrictEqual([vars.site, vars['GBL:runBy'], vars['GBL:nodeId'], vars['GBL:meshId']], ['group', 'service account', 'lin-override', MESH]);
     delete p.meshServer.webserver.wsagents[LIN];
 });
 
@@ -764,4 +767,29 @@ test('without a loadable MongoDB driver, the plugin logs why and MeshCentral kee
     await ctx.plugin.queueRun(); // no unhandled rejection
     const r = await rpc(ctx.plugin, 'admin', 'tree');
     assert.strictEqual(r.ok, false, 'requests fail with an error instead of crashing');
+});
+
+test('built-in variables describe the device, its group, the script and the run', async function () {
+    const ctx = createPlugin(); await ready(ctx);
+    const p = ctx.plugin, sent = [];
+    p.meshServer.webserver.wsagents[LIN] = { dbNodeKey: LIN, dbMeshKey: MESH, send: function (m) { sent.push(JSON.parse(m)); } };
+    const sid = (await rpc(p, 'admin', 'addScript', { name: 'Inventory', filetype: 'bash', content: 'echo #GBL:nodeName# #GBL:meshName# #GBL:tags# #GBL:os# #GBL:scriptName# #GBL:runTime#' })).data.id;
+    const plain = (await rpc(p, 'admin', 'addScript', { name: 'Plain', filetype: 'bash', content: 'echo #GBL:runBy#' })).data.id;
+    let lookups = 0;
+    const get = p.meshServer.db.Get;
+    p.meshServer.db.Get = function (id, cb) { lookups++; get(id, cb); };
+    // Change notices read the device record too, so compare a run without device details with one that uses them
+    await rpc(p, 'admin', 'runScript', { scriptId: plain, nodeIds: [LIN] });
+    await p.queueRun(); await wait(200);
+    const plainLookups = lookups; lookups = 0;
+    const before = Date.now();
+    await rpc(p, 'admin', 'runScript', { scriptId: sid, nodeIds: [LIN] });
+    await p.queueRun(); await wait(200);
+    assert.strictEqual(lookups, plainLookups + 1, 'the device record is read once more only when the script uses device details');
+    const vars = sent.filter(m => m.pluginaction == 'triggerJob').pop().replaceVars;
+    assert.deepStrictEqual([vars['GBL:nodeName'], vars['GBL:meshName'], vars['GBL:tags'], vars['GBL:os'], vars['GBL:scriptName']],
+        ['lab-linux-01', 'Test Lab', 'lab,linux', 'Ubuntu 24.04 LTS', 'Inventory']);
+    assert.ok(Date.parse(vars['GBL:runTime']) >= before - 1000 && /Z$/.test(vars['GBL:runTime']), vars['GBL:runTime']);
+    p.meshServer.db.Get = get;
+    delete p.meshServer.webserver.wsagents[LIN];
 });
