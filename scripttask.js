@@ -139,6 +139,7 @@ module.exports.scripttask = function (parent) {
 
     obj.queueRun = async function() {
         if (!obj.isActive()) return;
+        if (obj.db == null || typeof obj.db.getPendingJobs != 'function') return; // The database didn't start (see db.js)
         try { await obj.expireJobs(); } catch (e) { console.log('PLUGIN: ScriptTask: Could not expire jobs: ', e); }
         var onlineAgents = Object.keys(obj.meshServer.webserver.wsagents);
         //obj.debug('ScriptTask', 'Queue Running', Date().toLocaleString(), 'Online agents: ', onlineAgents);

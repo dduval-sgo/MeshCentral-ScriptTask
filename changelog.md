@@ -6,12 +6,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 ## [Known Issues]
 - None. Please feel free to submit an issue via [GitHub](https://github.com/dduval-sgo/MeshCentral-ScriptTask/issues) if you find anything.
 
-## [Unreleased]
+## [0.1.2] - 2026-10-26
 ### Added
 - Maximum run time: a setting (default 120 minutes; 0 for no limit) after which the device stops a script, and any programs it started, and records the run as an error with the output so far. Sent with each run, so it applies to runs sent after it changes. ([#5](https://github.com/dduval-sgo/MeshCentral-ScriptTask/issues/5))
 
 ### Fixed
 - Batch and Bash scripts that asked for input (`pause`, `set /p`, a Y/N prompt, `read`) could hang forever, because the prompt read the agent's own commands. Scripts now get no input (`NUL` on Windows, `/dev/null` elsewhere), so a prompt continues straight away. ([#6](https://github.com/dduval-sgo/MeshCentral-ScriptTask/issues/6))
+- If the MongoDB driver can't be found from the plugin's folder, ScriptTask now loads it the way MeshCentral did, and if that fails too it logs a clear message instead of failing with "Cannot find module 'mongodb'". The queue check no longer runs without a database. Tested with the official MeshCentral 1.3.1 Docker image on MongoDB 7, where the driver is found as is. ([#7](https://github.com/dduval-sgo/MeshCentral-ScriptTask/issues/7))
 
 ## [0.1.1] - 2026-10-26
 ### Fixed

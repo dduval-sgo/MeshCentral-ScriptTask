@@ -46,13 +46,13 @@ test.after(function () {
 });
 
 // pluginDir: load the plugin from a copy of its files instead of this checkout
-function createPlugin(pluginDir) {
+function createPlugin(pluginDir, args) {
     const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'scripttask-test-'));
     const events = [];
     const meshServer = {
         debug: function () { },
         // Each test gets its own MongoDB database when MONGODB_URL is set
-        args: process.env.MONGODB_URL ? { mongodb: process.env.MONGODB_URL, mongodbname: 'scripttask_test_' + path.basename(dataDir).replace(/\W/g, '') } : {},
+        args: args ? args : process.env.MONGODB_URL ? { mongodb: process.env.MONGODB_URL, mongodbname: 'scripttask_test_' + path.basename(dataDir).replace(/\W/g, '') } : {},
         parentpath: process.env.MESHCENTRAL_PARENT || path.join(__dirname, '..'),
         getConfigFilePath: function (f) { return path.join(dataDir, f); },
         webserver: {
@@ -753,4 +753,15 @@ test('devices with jobs are tracked in memory, including ones added since the la
     await rpc(p, 'admin', 'addSchedule', { scriptId: sid, nodeIds: [WIN], schedule: { recur: 'daily', interval: 1, startAt: nowS() + 600 } });
     assert.deepStrictEqual((await p.db.getNodeIdsInUse()).sort(), [LIN, WIN].sort(), 'added without waiting for a reload');
     assert.strictEqual((await rpc(p, 'admin', 'history', { filters: { nodeIds: [WIN] } })).ok, true, 'a single-device history query works');
+});
+
+test('without a loadable MongoDB driver, the plugin logs why and MeshCentral keeps running', { skip: !!process.env.MONGODB_URL }, async function () {
+    const logged = [], log = console.log;
+    console.log = function (m) { logged.push(String(m)); };
+    let ctx;
+    try { ctx = createPlugin(null, { mongodb: 'mongodb://127.0.0.1:1' }); } finally { console.log = log; }
+    assert.ok(logged.some(m => /MongoDB driver .* could not be loaded/.test(m)), logged.join('\n'));
+    await ctx.plugin.queueRun(); // no unhandled rejection
+    const r = await rpc(ctx.plugin, 'admin', 'tree');
+    assert.strictEqual(r.ok, false, 'requests fail with an error instead of crashing');
 });

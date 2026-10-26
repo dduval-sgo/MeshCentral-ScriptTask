@@ -79,4 +79,4 @@ Grant the manager account **Manage ScriptTask** using MeshCentral's plugin permi
 
 ## 8. MongoDB (only if you use it)
 
-- [ ] Repeat sections 2, 4 and 5 on a MeshCentral server that uses MongoDB. The automated server tests pass on MongoDB 7 with the driver MeshCentral installs (4.17.2), but a real server hasn't been tried.
+- [ ] Repeat sections 2, 4 and 5 on a MeshCentral server that uses MongoDB. The automated server tests pass on MongoDB 7 with the driver MeshCentral installs (4.17.2), and the official MeshCentral 1.3.1 Docker image on MongoDB 7 loads the plugin, stores its data in MongoDB and creates all its indexes. Runs on real agents against MongoDB haven't been tried.

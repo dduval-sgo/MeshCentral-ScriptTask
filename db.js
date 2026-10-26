@@ -17,6 +17,15 @@ function idForms(id) {
     try { var o = formatId(s); return (o === s) ? [s] : [s, o]; } catch (e) { return [s]; }
 }
 
+// MeshCentral installs the MongoDB driver in its own node_modules. The plugin looks there (see module.paths below);
+// if the plugin folder is somewhere else (a moved data folder, a container layout), load it the way MeshCentral did.
+function requireMongo() {
+    try { return require('mongodb'); } catch (e) { }
+    try { if (require.main != null) return require.main.require('mongodb'); } catch (e) { }
+    console.log('PLUGIN: ScriptTask: MeshCentral uses MongoDB, but the MongoDB driver (the "mongodb" package) could not be loaded from MeshCentral\'s or the plugin\'s folders. ScriptTask is not started. See https://github.com/dduval-sgo/MeshCentral-ScriptTask/issues/7');
+    return null;
+}
+
 module.exports.CreateDB = function(meshserver) {
     var obj = {};
     var NEMongo = require(__dirname + '/nemongo.js');
@@ -353,7 +362,9 @@ module.exports.CreateDB = function(meshserver) {
     };
     
     if (meshserver.args.mongodb) { // use MongDB
-      require('mongodb').MongoClient.connect(meshserver.args.mongodb, { useNewUrlParser: true, useUnifiedTopology: true }, function (err, client) {
+      var mongodb = requireMongo();
+      if (mongodb == null) return obj;
+      mongodb.MongoClient.connect(meshserver.args.mongodb, { useNewUrlParser: true, useUnifiedTopology: true }, function (err, client) {
           if (err != null) { console.log("Unable to connect to database: " + err); process.exit(); return; }
           
           var dbname = 'meshcentral';
@@ -388,11 +399,7 @@ module.exports.CreateDB = function(meshserver) {
           });
           
           
-          if (typeof require('mongodb').ObjectID == 'function') {
-              formatId = require('mongodb').ObjectID;
-          } else {
-              formatId = require('mongodb').ObjectId;
-          }
+          formatId = (typeof mongodb.ObjectID == 'function') ? mongodb.ObjectID : mongodb.ObjectId;
           obj.initFunctions();
     });  
     } else { // use NeDb
