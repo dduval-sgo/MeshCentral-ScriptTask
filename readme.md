@@ -99,9 +99,9 @@ The agent writes each script, with its variables filled in, and its output to a 
 
 ## Variables
 
-Scripts can use variables written as `#name#`. A variable can apply to all devices (global), one script, one device group, or one device. When names match, the most specific value wins: device, then device group, then script, then global. Names with no value anywhere are replaced with `VAR_NOT_FOUND`.
+Scripts can use variables written as `#name#`. A variable can apply to all devices (global), one script, one device group, or one device. When names match, the most specific value wins: device, then device group, then script, then global, then built-in. Names with no value anywhere are replaced with `VAR_NOT_FOUND`.
 
-Built-in variables: `#GBL:nodeId#`, `#GBL:meshId#` and `#GBL:runBy#`.
+Built-in variables: `#GBL:nodeId#`, `#GBL:meshId#` and `#GBL:runBy#`. They are the least specific level, so a variable you define with the same name (at any scope) replaces the built-in value.
 
 Values are filled in when the run is sent to the device, so the latest script and variable values are used. **Secret** variables are hidden in lists and in the editor until revealed. Scripts still receive the real value, so their output can show it.
 

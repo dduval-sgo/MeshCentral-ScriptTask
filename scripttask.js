@@ -180,12 +180,13 @@ module.exports.scripttask = function (parent) {
                             return (ordering[a.scope] - ordering[b.scope])
                               || a.name.localeCompare(b.name);
                         });
-                        finvals.forEach(fv => {
-                            replaceVars[fv.name] = fv.value;
-                        });
+                        // Built-ins are the least specific values: a variable with the same name at any scope replaces them
                         replaceVars['GBL:meshId'] = obj.meshServer.webserver.wsagents[job.node]['dbMeshKey'];
                         replaceVars['GBL:nodeId'] = job.node;
                         replaceVars['GBL:runBy'] = job.runBy || 'unknown';
+                        finvals.forEach(fv => {
+                            replaceVars[fv.name] = fv.value;
+                        });
                         //console.log('FV IS', finvals);
                         //console.log('RV IS', replaceVars);
                     }

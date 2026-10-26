@@ -716,3 +716,22 @@ test('an interrupted scheduled run closes its slot and the schedule carries on',
     assert.deepStrictEqual([jobs[1].completeTime, jobs[1].slot], [null, r.schedule.startAt + 3600], 'the next hourly run is scheduled');
     delete p.meshServer.webserver.wsagents[LIN];
 });
+
+test('variables: more specific values win, and built-ins are the least specific', async function () {
+    const ctx = createPlugin(); await ready(ctx);
+    const p = ctx.plugin, sent = [];
+    p.meshServer.webserver.wsagents[LIN] = { dbNodeKey: LIN, dbMeshKey: MESH, send: function (m) { sent.push(JSON.parse(m)); } };
+    const sid = (await rpc(p, 'admin', 'addScript', { name: 'Vars', filetype: 'bash', content: 'echo #site# #GBL:runBy# #GBL:nodeId# #GBL:meshId#' })).data.id;
+    for (const v of [
+        { name: 'site', scope: 'global', value: 'global' },
+        { name: 'site', scope: 'script', scopeTarget: sid, value: 'script' },
+        { name: 'site', scope: 'mesh', scopeTarget: MESH, value: 'group' },
+        { name: 'GBL:runBy', scope: 'global', value: 'service account' },
+        { name: 'GBL:nodeId', scope: 'node', scopeTarget: LIN, value: 'lin-override' }
+    ]) assert.ok((await rpc(p, 'admin', 'addVar', v)).ok, v.name);
+    await rpc(p, 'admin', 'runScript', { scriptId: sid, nodeIds: [LIN] });
+    await p.queueRun(); await wait(200);
+    const vars = sent.find(m => m.pluginaction == 'triggerJob').replaceVars;
+    assert.deepStrictEqual(vars, { site: 'group', 'GBL:runBy': 'service account', 'GBL:nodeId': 'lin-override', 'GBL:meshId': MESH });
+    delete p.meshServer.webserver.wsagents[LIN];
+});

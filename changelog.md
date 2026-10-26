@@ -12,6 +12,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - Script and output files no longer pile up on devices or sit in folders other users can read. They're written to a `scripttask` folder next to the agent, open only to SYSTEM and Administrators on Windows (`chmod 700` elsewhere), which is emptied when the agent starts. Files left by earlier versions in the agent's folder or temp folders are removed. ([#3](https://github.com/dduval-sgo/MeshCentral-ScriptTask/issues/3))
 - The agent's list of running jobs could drop the wrong job, so a job could start twice or appear to run forever. ([#4](https://github.com/dduval-sgo/MeshCentral-ScriptTask/issues/4))
 - Two runs waiting for the same script on a device could get the first run's variable values.
+- A variable defined with the same name as a built-in (`GBL:nodeId`, `GBL:meshId`, `GBL:runBy`) was ignored: the built-in value always won. Built-ins are now the least specific level, so any variable with the same name replaces them, and the editor and Variables pages say so.
 - Installing, reinstalling or upgrading the plugin without restarting MeshCentral could keep the previous version's code running, because MeshCentral's module cache isn't cleared. ScriptTask now compares its version with the one on disk and loads the new files itself.
 - A copy of the plugin that has been replaced (by a reload, reinstall or upgrade), disabled or removed stops checking the queue, so two copies never send the same runs.
 

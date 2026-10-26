@@ -110,13 +110,14 @@
         var vars = props.vars || [];
         var isKnownVar = function (n) { return BUILT_INS[n] != null || vars.some(function (v) { return v.name == n; }); };
         var describeVar = function (n) {
-            if (BUILT_INS[n]) return ['Built in: ' + BUILT_INS[n] + '.'];
             var s = varSummary(vars, n, item._id), rows = [];
             var shown = function (v) { return v.secret ? '(secret)' : v.value; };
             if (s.script) rows.push('This script: ' + shown(s.script));
             if (s.global) rows.push('Global: ' + shown(s.global));
             if (s.mesh) rows.push('Overridden in ' + plural(s.mesh, 'device group'));
             if (s.node) rows.push('Overridden on ' + plural(s.node, 'device'));
+            // Built-ins are the least specific value: any variable with the same name replaces them
+            if (BUILT_INS[n]) rows.push(rows.length ? 'These replace the built-in value (' + BUILT_INS[n].toLowerCase() + ').' : 'Built in: ' + BUILT_INS[n] + '.');
             if (rows.length == 0) rows.push('Not defined anywhere. It runs as VAR_NOT_FOUND unless a value is added.');
             return rows;
         };
@@ -190,16 +191,17 @@
             <div class="table-responsive"><table class="table table-sm st-table">
                 <thead><tr><th>Variable</th><th>This script</th><th>Global</th><th>Overrides</th></tr></thead>
                 <tbody>${props.refs.map(function (n) {
-                    if (BUILT_INS[n]) return html`<tr key=${n}><td><code>#${n}#</code></td><td colspan="3" class="text-body-secondary">Built in: ${BUILT_INS[n]}</td></tr>`;
                     var s = varSummary(props.vars, n, item._id), undefinedVar = !s.script && !s.global && !s.mesh && !s.node;
+                    if (BUILT_INS[n] && undefinedVar) return html`<tr key=${n}><td><code>#${n}#</code></td><td colspan="3" class="text-body-secondary">Built in: ${BUILT_INS[n]}</td></tr>`;
                     return html`<tr key=${n}>
-                        <td><code>#${n}#</code>${undefinedVar ? html`<div class="small text-warning-emphasis"><${ST.Icon} name="exclamation-triangle-fill" class="me-1" />Not defined. Runs as VAR_NOT_FOUND.</div>` : null}</td>
+                        <td><code>#${n}#</code>${undefinedVar ? html`<div class="small text-warning-emphasis"><${ST.Icon} name="exclamation-triangle-fill" class="me-1" />Not defined. Runs as VAR_NOT_FOUND.</div>` : null}
+                            ${BUILT_INS[n] ? html`<div class="small text-body-secondary">Replaces the built-in value</div>` : null}</td>
                         <td>${s.script ? html`<${S.VarValue} variable=${s.script} />` : html`<span class="text-body-tertiary">—</span>`}</td>
                         <td>${s.global ? html`<${S.VarValue} variable=${s.global} />` : html`<span class="text-body-tertiary">—</span>`}</td>
                         <td class="small">${[s.mesh ? plural(s.mesh, 'device group') : '', s.node ? plural(s.node, 'device') : ''].filter(Boolean).join(', ') || html`<span class="text-body-tertiary">None</span>`}</td>
                     </tr>`; })}</tbody>
             </table></div>
-            <div class="form-text">Device group and device values are set in <a href="#/variables">Variables</a> or on a device's ScriptTask tab. The most specific value wins: device, then group, then script, then global.</div>`}
+            <div class="form-text">Device group and device values are set in <a href="#/variables">Variables</a> or on a device's ScriptTask tab. The most specific value wins: device, then group, then script, then global, then built-in.</div>`}
             <div class="st-section-title d-flex align-items-center">Script variables
                 <button class="btn btn-sm st-btn-quiet ms-auto" onClick=${function () { a.editVar(null, item); }}><${ST.Icon} name="plus-lg" class="me-1" />New variable</button></div>
             ${props.scriptVars.length == 0 ? html`<${ST.Empty}>No variables are set for this script only.</${ST.Empty}>` : html`
@@ -887,7 +889,7 @@
         };
         var lastName = null;
         return html`<div class="st-list-page">
-            <div class="st-list-head"><h2 class="h4 mb-0">Variables</h2><span class="text-body-secondary small">Values scripts use as #name#. Device beats device group, group beats script, and script beats global.</span>
+            <div class="st-list-head"><h2 class="h4 mb-0">Variables</h2><span class="text-body-secondary small">Values scripts use as #name#. Device beats device group, group beats script, script beats global, and global beats built-in.</span>
                 <button class="btn btn-sm btn-primary ms-auto" onClick=${function () { props.editVar(null); }}><${ST.Icon} name="plus-lg" class="me-1" />New variable</button></div>
             ${undefinedNames.length ? html`<div class="alert alert-warning py-2 mb-0 small st-undefined-vars">
                 <${ST.Icon} name="exclamation-triangle-fill" class="me-1" />Used in scripts but not defined, so they run as VAR_NOT_FOUND:
@@ -907,7 +909,8 @@
                     <tbody>${shown.map(function (v) {
                         var first = v.name != lastName; lastName = v.name;
                         return html`<tr key=${v._id} class=${first ? 'st-var-first' : 'st-var-more'}>
-                            <td>${first ? html`<code>#${v.name}#</code>` : html`<span class="visually-hidden">#${v.name}#</span>`}</td>
+                            <td>${first ? html`<code>#${v.name}#</code>` : html`<span class="visually-hidden">#${v.name}#</span>`}
+                                ${first && BUILT_INS[v.name] ? html`<div class="small text-body-secondary">Replaces the built-in value</div>` : null}</td>
                             <td><span class="text-body-secondary small me-1">${S.SCOPE_LABEL[v.scope]}</span>
                                 ${v.scope == 'node' ? html`<${DeviceCell} id=${v.scopeTarget} compact=${true} />`
                                 : v.scope == 'script' && scriptName(v.scopeTarget) ? html`<a href=${'#/library/' + encodeURIComponent(v.scopeTarget)}>${targetText(v)}</a>`

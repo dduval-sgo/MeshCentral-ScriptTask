@@ -371,7 +371,7 @@
                     <label class="form-check-label" for="st-var-secret">Secret</label>
                     <div class="form-text mt-0">Hidden in lists and the editor until revealed. Scripts still receive the value, and their output may show it.</div>
                 </div>
-                <div class="form-text">When names match, device beats group, group beats script, and script beats global.</div>
+                <div class="form-text">When names match, device beats group, group beats script, script beats global, and global beats a built-in value.</div>
                 ${err[0] ? html`<div class="alert alert-danger py-2 mt-3 mb-0">${err[0]}</div>` : null}
             </form>
         </${ST.Modal}>`;
